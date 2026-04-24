@@ -66,6 +66,43 @@ const promptContentCache = new Map([
   ['prompt-1', 'cached'],
 ]);
 
+const latestNewFilesByKey = new Map([
+  ['project-1:chat-1:msg-1:bundle.zip', {
+    file: {
+      projectId: 'project-1',
+      projectName: 'Project 1',
+      chatId: 'chat-1',
+      messageId: 'msg-1',
+      sandboxPath: 'bundle.zip',
+      downloadUrl: null,
+      downloadPath: null,
+      fileName: 'bundle.zip',
+      discoveredAt: '2026-04-23T07:00:00.000Z',
+      updatedAt: '2026-04-23T07:00:00.000Z',
+      hasRemoteManifest: true,
+      remoteManifestProjectId: 'project-1',
+      remoteManifestStatus: 'matched',
+    },
+  }],
+  ['project-1:chat-1:msg-2:danger-bundle.zip', {
+    file: {
+      projectId: 'project-1',
+      projectName: 'Project 1',
+      chatId: 'chat-1',
+      messageId: 'msg-2',
+      sandboxPath: 'danger-bundle.zip',
+      downloadUrl: null,
+      downloadPath: null,
+      fileName: 'danger-bundle.zip',
+      discoveredAt: '2026-04-23T07:00:00.000Z',
+      updatedAt: '2026-04-23T07:00:00.000Z',
+      hasRemoteManifest: true,
+      remoteManifestProjectId: 'project-2',
+      remoteManifestStatus: 'mismatched',
+    },
+  }],
+]);
+
 const fakeInput = new global.HTMLInputElement();
 const overlayRootElement = {
   innerHTML: '',
@@ -183,22 +220,7 @@ const feature = createPromptsFeature({
   bodyElement,
   windowLike: { innerHeight: 800, innerWidth: 1200 },
   getChatFileKey: (file) => `${file.projectId}:${file.chatId}:${file.messageId}:${file.sandboxPath}`,
-  findLatestNewFileByKey: (fileKey) => fileKey === 'project-1:chat-1:msg-1:bundle.zip'
-    ? {
-        file: {
-          projectId: 'project-1',
-          projectName: 'Project 1',
-          chatId: 'chat-1',
-          messageId: 'msg-1',
-          sandboxPath: 'bundle.zip',
-          downloadUrl: null,
-          downloadPath: null,
-          fileName: 'bundle.zip',
-          discoveredAt: '2026-04-23T07:00:00.000Z',
-          updatedAt: '2026-04-23T07:00:00.000Z',
-        },
-      }
-    : null,
+  findLatestNewFileByKey: (fileKey) => latestNewFilesByKey.get(fileKey) ?? null,
   remoteManifestFile: '.chatgpt-remote/manifest.json',
   getRemoteManifestPrompt: (projectId) => `manifest for ${projectId}`,
   findSidebarProject: () => null,
@@ -259,7 +281,27 @@ feature.actions.openArchiveApplyWarningDialog({
   updatedAt: '2026-04-23T07:00:00.000Z',
 });
 assert.equal(feature.selectors.isArchiveApplyWarningOpen(), true);
+assert.match(overlayRootElement.innerHTML, /overwrite matching files in the current project folder/i);
+assert.match(overlayRootElement.innerHTML, /Apply and overwrite/);
+feature.actions.closeArchiveApplyWarningDialog();
+assert.equal(feature.selectors.isArchiveApplyWarningOpen(), false);
+
+feature.actions.openArchiveApplyWarningDialog({
+  projectId: 'project-1',
+  projectName: 'Project 1',
+  chatId: 'chat-1',
+  messageId: 'msg-2',
+  sandboxPath: 'danger-bundle.zip',
+  downloadUrl: null,
+  downloadPath: null,
+  fileName: 'danger-bundle.zip',
+  discoveredAt: '2026-04-23T07:00:00.000Z',
+  updatedAt: '2026-04-23T07:00:00.000Z',
+});
+assert.equal(feature.selectors.isArchiveApplyWarningOpen(), true);
+assert.match(overlayRootElement.innerHTML, /dangerous to apply/i);
 assert.match(overlayRootElement.innerHTML, /Apply anyway/);
+assert.match(overlayRootElement.innerHTML, /danger-button/);
 feature.actions.closeArchiveApplyWarningDialog();
 assert.equal(feature.selectors.isArchiveApplyWarningOpen(), false);
 

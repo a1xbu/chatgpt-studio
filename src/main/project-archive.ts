@@ -580,7 +580,7 @@ async function applyRegularFileToProject(projectFolderPath: string, downloadedFi
 
 export async function applyDownloadedSandboxFile(
   projectFolderPath: string,
-  file: Pick<ChatFileRecord, 'downloadPath' | 'fileName' | 'projectRootInArchive' | 'gitBundle' | 'chatId'>,
+  file: Pick<ChatFileRecord, 'downloadPath' | 'fileName' | 'projectRootInArchive' | 'gitBundle' | 'chatId' | 'sandboxPath'>,
   selectedRelativePath?: string | null,
 ): Promise<AppliedSandboxContentResult> {
   const downloadedFilePath = normalizeText(file.downloadPath);
@@ -593,7 +593,7 @@ export async function applyDownloadedSandboxFile(
   let gitBundle: ChatFileRecord['gitBundle'] = file.gitBundle ?? null;
   if (isZipPath(downloadedFilePath)) {
     updatedFileCount = await applyArchiveToProject(projectFolderPath, downloadedFilePath, normalizeArchivePath(file.projectRootInArchive ?? ''), selectedRelativePath ?? null);
-  } else if (isDownloadedGitBundleFile({ downloadPath: downloadedFilePath, fileName: file.fileName ?? null, sandboxPath: file.fileName ?? null })) {
+  } else if (isDownloadedGitBundleFile({ downloadPath: downloadedFilePath, fileName: file.fileName ?? null, sandboxPath: file.sandboxPath })) {
     if (selectedRelativePath) {
       throw new Error('Selecting nested entries is only supported for ZIP archives.');
     }

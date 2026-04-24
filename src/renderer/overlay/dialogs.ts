@@ -14,7 +14,7 @@ export type ArchiveApplyWarningViewModel = {
   remoteManifestProjectId: string | null;
   manifestStatus: 'missing' | 'matched' | 'mismatched' | 'invalid' | null;
   relativePath: string | null;
-  isDangerous: boolean;
+  hasProjectIdMismatch: boolean;
 };
 
 export type PropertiesDialogViewModel = {
@@ -64,47 +64,50 @@ export function buildArchiveApplyWarningDialogMarkup(
   const targetDescription = viewModel.relativePath
     ? `entry <strong>${helpers.escapeHtml(viewModel.relativePath)}</strong> from archive <strong>${helpers.escapeHtml(viewModel.fileName)}</strong>`
     : `archive <strong>${helpers.escapeHtml(viewModel.fileName)}</strong>`;
-  const manifestWarning = viewModel.manifestStatus === 'mismatched'
+  const manifestValidationWarning = viewModel.manifestStatus === 'missing'
+    ? `
+      <div class="properties-dialog__warning-copy">
+        The downloaded archive does not contain <code>${helpers.escapeHtml(viewModel.manifestFile)}</code>, so project_id cannot be validated before overwrite.
+      </div>
+    `
+    : viewModel.manifestStatus === 'invalid'
+      ? `
+        <div class="properties-dialog__warning-copy">
+          The downloaded archive contains an invalid <code>${helpers.escapeHtml(viewModel.manifestFile)}</code>, so project_id cannot be validated before overwrite.
+        </div>
+      `
+      : '';
+  const mismatchWarning = viewModel.hasProjectIdMismatch
     ? `
       <div class="properties-dialog__danger-copy">
         The downloaded bundle declares project_id <code>${helpers.escapeHtml(viewModel.remoteManifestProjectId ?? 'unknown')}</code>, but the current project is <code>${helpers.escapeHtml(viewModel.projectId)}</code>.
         This bundle may belong to another project and is dangerous to apply.
       </div>
     `
-    : viewModel.manifestStatus === 'missing'
-      ? `
-        <div class="properties-dialog__danger-copy">
-          The downloaded archive does not contain <code>${helpers.escapeHtml(viewModel.manifestFile)}</code>, so project_id cannot be validated.
-        </div>
-      `
-      : viewModel.manifestStatus === 'invalid'
-        ? `
-          <div class="properties-dialog__danger-copy">
-            The downloaded archive contains an invalid <code>${helpers.escapeHtml(viewModel.manifestFile)}</code>, so project_id cannot be validated.
-          </div>
-        `
-        : '';
-  const confirmClass = viewModel.isDangerous
+    : '';
+  const confirmClass = viewModel.hasProjectIdMismatch
     ? 'danger-button secondary-button secondary-button--small'
     : 'primary-button secondary-button--small';
+  const confirmLabel = viewModel.hasProjectIdMismatch ? 'Apply anyway' : 'Apply and overwrite';
   const relativePathAttribute = viewModel.relativePath
     ? ` data-relative-path="${helpers.escapeHtml(viewModel.relativePath)}"`
     : '';
 
   return `
     <div class="modal-backdrop">
-      <div class="properties-dialog properties-dialog--warning${viewModel.isDangerous ? ' properties-dialog--danger' : ''}" role="dialog" aria-modal="true" aria-label="Archive apply warning">
+      <div class="properties-dialog properties-dialog--warning${viewModel.hasProjectIdMismatch ? ' properties-dialog--danger' : ''}" role="dialog" aria-modal="true" aria-label="Archive apply warning">
         <div class="properties-dialog__header">
           <h2 class="properties-dialog__title">Apply files?</h2>
         </div>
         <div class="properties-dialog__body">
           <div class="properties-dialog__warning-copy">
-            Applying ${targetDescription} will overwrite files in the current project folder when paths match.
+            Applying ${targetDescription} will overwrite matching files in the current project folder.
           </div>
-          ${manifestWarning}
+          ${manifestValidationWarning}
+          ${mismatchWarning}
           <div class="properties-dialog__actions">
             <button class="secondary-button secondary-button--small" data-action="cancel-archive-apply-warning" type="button">Cancel</button>
-            <button class="${confirmClass}" data-action="confirm-archive-apply-warning" data-file-key="${helpers.escapeHtml(viewModel.fileKey)}"${relativePathAttribute} type="button">Apply</button>
+            <button class="${confirmClass}" data-action="confirm-archive-apply-warning" data-file-key="${helpers.escapeHtml(viewModel.fileKey)}"${relativePathAttribute} type="button">${confirmLabel}</button>
           </div>
           <details class="archive-help">
             <summary>How to avoid problems?</summary>

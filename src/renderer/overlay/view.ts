@@ -51,6 +51,7 @@ export function renderOverlayDialog(options: OverlayRenderOptions): void {
     }
 
     const file = target.file;
+    const manifestStatus = file.remoteManifestStatus ?? (file.hasRemoteManifest ? 'matched' : 'missing');
     options.overlayRootElement.innerHTML = buildArchiveApplyWarningDialogMarkup(
       {
         fileKey: options.archiveApplyWarningDialogState.fileKey,
@@ -59,9 +60,9 @@ export function renderOverlayDialog(options: OverlayRenderOptions): void {
         manifestFile: options.remoteManifestFile,
         promptText: options.getRemoteManifestPrompt(file.projectId),
         remoteManifestProjectId: file.remoteManifestProjectId ?? null,
-        manifestStatus: file.remoteManifestStatus ?? (file.hasRemoteManifest ? 'matched' : 'missing'),
+        manifestStatus,
         relativePath: options.archiveApplyWarningDialogState.relativePath ?? null,
-        isDangerous: (file.remoteManifestStatus ?? (file.hasRemoteManifest ? 'matched' : 'missing')) !== 'matched',
+        hasProjectIdMismatch: manifestStatus === 'mismatched',
       },
       { escapeHtml: options.escapeHtml },
     );
