@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.chatgpt/
+.idea/
+.chatgpt-remote/
+dist-main-test/
