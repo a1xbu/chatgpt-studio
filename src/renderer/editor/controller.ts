@@ -247,6 +247,7 @@ export function ensureChatHistoryTab(
     status: 'loading',
     history: null,
     message: null,
+    viewMode: 'markdown',
     requestToken: 0,
     inFlightRequest: null,
     reloadAfterLoad: false,

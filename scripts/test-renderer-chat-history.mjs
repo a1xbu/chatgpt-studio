@@ -15,11 +15,33 @@ class FakeClassList {
     this.values = new Set(String(owner.className ?? '').split(/\s+/).filter(Boolean));
   }
 
+  sync() {
+    this.owner.className = Array.from(this.values).join(' ');
+  }
+
   add(...tokens) {
     for (const token of tokens) {
       if (token) this.values.add(token);
     }
-    this.owner.className = Array.from(this.values).join(' ');
+    this.sync();
+  }
+
+  remove(...tokens) {
+    for (const token of tokens) {
+      this.values.delete(token);
+    }
+    this.sync();
+  }
+
+  toggle(token, force) {
+    const shouldAdd = force === undefined ? !this.values.has(token) : Boolean(force);
+    if (shouldAdd) {
+      this.values.add(token);
+    } else {
+      this.values.delete(token);
+    }
+    this.sync();
+    return shouldAdd;
   }
 }
 
@@ -29,6 +51,8 @@ class FakeElement {
     this.children = [];
     this.parentElement = null;
     this.dataset = {};
+    this.attributes = {};
+    this.eventListeners = new Map();
     this.className = '';
     this.classList = new FakeClassList(this);
     this._textContent = '';
@@ -69,7 +93,29 @@ class FakeElement {
     return child;
   }
 
-  addEventListener() {}
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  getAttribute(name) {
+    return this.attributes[name] ?? null;
+  }
+
+  addEventListener(type, callback) {
+    const listeners = this.eventListeners.get(type) ?? [];
+    listeners.push(callback);
+    this.eventListeners.set(type, listeners);
+  }
+
+  dispatchEvent(type) {
+    for (const listener of this.eventListeners.get(type) ?? []) {
+      listener();
+    }
+  }
+
+  click() {
+    this.dispatchEvent('click');
+  }
 
   scrollIntoView() {}
 }
@@ -170,6 +216,34 @@ const shell = createChatHistoryTabContent(tab, 'https://chatgpt.com/c/chat-1', {
 const messagesElement = findByClass(shell, 'chat-history-messages');
 assert.ok(messagesElement);
 assert.equal(messagesElement.children.length, 3);
+
+const rawJsonElement = findByClass(shell, 'chat-history-raw-json');
+assert.ok(rawJsonElement);
+assert.equal(rawJsonElement.hidden, true);
+const rawJsonContent = findByClass(rawJsonElement, 'chat-history-raw-json__content');
+assert.ok(rawJsonContent);
+assert.match(rawJsonContent.textContent, /\n  "messages": \[\n/);
+assert.match(rawJsonContent.textContent, /673bc037-a4b1-402f-adf4-eeae3bfa9f64/);
+
+const viewToggle = findByClass(shell, 'chat-history-view-toggle');
+assert.ok(viewToggle);
+assert.equal(viewToggle.children.length, 2);
+assert.equal(viewToggle.children[0].getAttribute('aria-pressed'), 'true');
+assert.equal(viewToggle.children[1].getAttribute('aria-pressed'), 'false');
+
+viewToggle.children[1].click();
+assert.equal(tab.viewMode, 'raw-json');
+assert.equal(messagesElement.hidden, true);
+assert.equal(rawJsonElement.hidden, false);
+assert.ok(hasClass(shell, 'chat-history-shell--raw-json'));
+assert.equal(viewToggle.children[0].getAttribute('aria-pressed'), 'false');
+assert.equal(viewToggle.children[1].getAttribute('aria-pressed'), 'true');
+
+viewToggle.children[0].click();
+assert.equal(tab.viewMode, 'markdown');
+assert.equal(messagesElement.hidden, false);
+assert.equal(rawJsonElement.hidden, true);
+assert.ok(!hasClass(shell, 'chat-history-shell--raw-json'));
 
 const [first, second, thought] = messagesElement.children;
 assert.ok(hasClass(first, 'chat-message'));

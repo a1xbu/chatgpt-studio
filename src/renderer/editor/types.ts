@@ -34,6 +34,7 @@ export type ChatEditorTab = {
   status: 'loading' | 'ready' | 'empty' | 'error';
   history: ChatHistoryRecord | null;
   message: string | null;
+  viewMode: 'markdown' | 'raw-json';
   requestToken: number;
   inFlightRequest: Promise<void> | null;
   reloadAfterLoad: boolean;

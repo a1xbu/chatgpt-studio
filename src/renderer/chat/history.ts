@@ -1,5 +1,7 @@
 import type { ChatFileRecord, ChatHistoryMessageRecord, ChatHistoryRecord } from '../../shared/contracts';
 
+export type ChatHistoryViewMode = 'markdown' | 'raw-json';
+
 export type ChatEditorTabState = {
   id: string;
   title: string;
@@ -8,6 +10,7 @@ export type ChatEditorTabState = {
   status: 'loading' | 'ready' | 'empty' | 'error';
   history: ChatHistoryRecord | null;
   message: string | null;
+  viewMode?: ChatHistoryViewMode;
 };
 
 type ChatHistoryRenderItem =
@@ -39,6 +42,83 @@ export function createChatHistoryEmptyState(message: string): HTMLDivElement {
 
 export function countReasoningBlocks(history: ChatHistoryRecord | null): number {
   return history?.messages.filter((message) => message.contentType === 'reasoning_recap').length ?? 0;
+}
+
+function getChatHistoryViewMode(tab: ChatEditorTabState): ChatHistoryViewMode {
+  return tab.viewMode === 'raw-json' ? 'raw-json' : 'markdown';
+}
+
+function formatRawChatHistoryJson(history: ChatHistoryRecord): string {
+  return JSON.stringify(history, null, 2);
+}
+
+function createChatHistoryViewToggle(
+  currentMode: ChatHistoryViewMode,
+  onChange: (mode: ChatHistoryViewMode) => void,
+): HTMLElement {
+  const toggle = document.createElement('div');
+  toggle.className = 'chat-history-view-toggle';
+  toggle.setAttribute('role', 'group');
+  toggle.setAttribute('aria-label', 'Chat history display mode');
+
+  const modes: Array<{ mode: ChatHistoryViewMode; label: string }> = [
+    { mode: 'markdown', label: 'Markdown' },
+    { mode: 'raw-json', label: 'Raw JSON' },
+  ];
+
+  const buttons = new Map<ChatHistoryViewMode, HTMLButtonElement>();
+  const syncButtons = (activeMode: ChatHistoryViewMode): void => {
+    for (const { mode } of modes) {
+      const button = buttons.get(mode);
+      if (!button) {
+        continue;
+      }
+      const isActive = mode === activeMode;
+      button.classList.toggle('chat-history-view-toggle__button--active', isActive);
+      button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    }
+  };
+
+  for (const { mode, label } of modes) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chat-history-view-toggle__button';
+    button.textContent = label;
+    button.addEventListener('click', () => {
+      syncButtons(mode);
+      onChange(mode);
+    });
+    buttons.set(mode, button);
+    toggle.append(button);
+  }
+
+  syncButtons(currentMode);
+  return toggle;
+}
+
+function setChatHistoryViewMode(
+  tab: ChatEditorTabState,
+  shell: HTMLElement,
+  markdownPanel: HTMLElement,
+  rawJsonPanel: HTMLElement,
+  mode: ChatHistoryViewMode,
+): void {
+  tab.viewMode = mode;
+  const showRawJson = mode === 'raw-json';
+  shell.classList.toggle('chat-history-shell--raw-json', showRawJson);
+  markdownPanel.hidden = showRawJson;
+  rawJsonPanel.hidden = !showRawJson;
+}
+
+function createRawJsonPanel(history: ChatHistoryRecord): HTMLElement {
+  const panel = document.createElement('div');
+  panel.className = 'chat-history-raw-json';
+
+  const pre = document.createElement('pre');
+  pre.className = 'chat-history-raw-json__content';
+  pre.textContent = formatRawChatHistoryJson(history);
+  panel.append(pre);
+  return panel;
 }
 
 function createChatFileList(files: readonly ChatFileRecord[], helpers: ChatHistoryHelpers): HTMLElement {
@@ -243,6 +323,10 @@ export function createChatHistoryTabContent(
 
   const shell = document.createElement('div');
   shell.className = 'chat-history-shell';
+  const initialViewMode = getChatHistoryViewMode(tab);
+  const messages = document.createElement('div');
+  messages.className = 'chat-history-messages';
+  const rawJsonPanel = createRawJsonPanel(history);
 
   const header = document.createElement('div');
   header.className = 'chat-history-header';
@@ -250,11 +334,15 @@ export function createChatHistoryTabContent(
   const headerTop = document.createElement('div');
   headerTop.className = 'chat-history-header__top';
 
-
   const title = document.createElement('h2');
   title.className = 'chat-history-header__title';
   title.textContent = history.chatName ?? tab.title;
   headerTop.append(title);
+
+  const viewToggle = createChatHistoryViewToggle(initialViewMode, (mode) => {
+    setChatHistoryViewMode(tab, shell, messages, rawJsonPanel, mode);
+  });
+  headerTop.append(viewToggle);
   header.append(headerTop);
 
   const meta = document.createElement('div');
@@ -267,8 +355,6 @@ export function createChatHistoryTabContent(
   header.append(meta);
   shell.append(header);
 
-  const messages = document.createElement('div');
-  messages.className = 'chat-history-messages';
   const filesByMessageId = new Map<string, ChatFileRecord[]>();
 
   for (const file of history.files ?? []) {
@@ -283,20 +369,19 @@ export function createChatHistoryTabContent(
 
   if (!history.messages.length) {
     messages.append(createChatHistoryEmptyState('No text messages were extracted from this conversation snapshot yet.'));
-    shell.append(messages);
-    return shell;
-  }
+  } else {
+    for (const item of buildChatHistoryRenderItems(history.messages)) {
+      if (item.kind === 'reasoning') {
+        messages.append(createReasoningBlock(item.summaryMessage, helpers));
+        continue;
+      }
 
-  for (const item of buildChatHistoryRenderItems(history.messages)) {
-    if (item.kind === 'reasoning') {
-      messages.append(createReasoningBlock(item.summaryMessage, helpers));
-      continue;
+      messages.append(createChatMessageElement(item.message, filesByMessageId.get(item.message.messageId ?? '') ?? [], helpers));
     }
-
-    messages.append(createChatMessageElement(item.message, filesByMessageId.get(item.message.messageId ?? '') ?? [], helpers));
   }
 
-  shell.append(messages);
+  shell.append(messages, rawJsonPanel);
+  setChatHistoryViewMode(tab, shell, messages, rawJsonPanel, initialViewMode);
 
   return shell;
 }
