@@ -18,7 +18,6 @@ type ChatHistoryRenderItem =
   | {
       kind: 'reasoning';
       summaryMessage: ChatHistoryMessageRecord;
-      hiddenMessages: ChatHistoryMessageRecord[];
     };
 
 export type ChatHistoryHelpers = {
@@ -145,11 +144,10 @@ function createChatMessageElement(
 
 function createReasoningBlock(
   summaryMessage: ChatHistoryMessageRecord,
-  hiddenMessages: readonly ChatHistoryMessageRecord[],
-  filesByMessageId: ReadonlyMap<string, ChatFileRecord[]>,
   helpers: ChatHistoryHelpers,
 ): HTMLElement {
   const reasoning = summaryMessage.reasoning;
+  const steps = reasoning?.steps ?? [];
   const details = document.createElement('details');
   details.className = 'chat-reasoning';
 
@@ -163,7 +161,7 @@ function createReasoningBlock(
 
   const meta = document.createElement('span');
   meta.className = 'chat-reasoning__meta';
-  meta.textContent = `${String(hiddenMessages.length)} hidden ${hiddenMessages.length === 1 ? 'message' : 'messages'}`;
+  meta.textContent = steps.length ? `${String(steps.length)} ${steps.length === 1 ? 'step' : 'steps'}` : 'No captured steps';
   summary.append(meta);
 
   details.append(summary);
@@ -171,19 +169,8 @@ function createReasoningBlock(
   const body = document.createElement('div');
   body.className = 'chat-reasoning__body';
 
-  if (hiddenMessages.length) {
-    const messageChain = document.createElement('div');
-    messageChain.className = 'chat-reasoning__messages';
-
-    for (const message of hiddenMessages) {
-      messageChain.append(createChatMessageElement(message, filesByMessageId.get(message.messageId ?? '') ?? [], helpers, { nested: true }));
-    }
-
-    body.append(messageChain);
-  }
-
-  if (!hiddenMessages.length && (reasoning?.steps.length ?? 0)) {
-    for (const [index, step] of (reasoning?.steps ?? []).entries()) {
+  if (steps.length) {
+    for (const [index, step] of steps.entries()) {
       const stepElement = document.createElement('section');
       stepElement.className = 'chat-reasoning__step';
 
@@ -199,12 +186,10 @@ function createReasoningBlock(
 
       body.append(stepElement);
     }
-  }
-
-  if (!hiddenMessages.length && !(reasoning?.steps.length ?? 0)) {
+  } else {
     const empty = document.createElement('div');
     empty.className = 'chat-reasoning__empty';
-    empty.textContent = 'No captured assistant/tool messages were found for this reasoning block.';
+    empty.textContent = 'No captured reasoning steps were found for this reasoning recap.';
     body.append(empty);
   }
 
@@ -222,68 +207,13 @@ function createReasoningBlock(
 }
 
 function buildChatHistoryRenderItems(messages: readonly ChatHistoryMessageRecord[]): ChatHistoryRenderItem[] {
-  const items: ChatHistoryRenderItem[] = [];
-  let cursor = 0;
-
-  while (cursor < messages.length) {
-    const message = messages[cursor];
-    if (message.role === 'user') {
-      items.push({ kind: 'message', message });
-      cursor += 1;
-      continue;
+  return messages.map<ChatHistoryRenderItem>((message) => {
+    if (message.contentType === 'reasoning_recap') {
+      return { kind: 'reasoning', summaryMessage: message };
     }
 
-    let segmentEnd = cursor;
-    while (segmentEnd < messages.length && messages[segmentEnd].role !== 'user') {
-      segmentEnd += 1;
-    }
-
-    const segment = messages.slice(cursor, segmentEnd);
-    const summaryMessage = segment.at(-1);
-    if (!summaryMessage || summaryMessage.contentType !== 'reasoning_recap') {
-      for (const entry of segment) {
-        items.push({ kind: 'message', message: entry });
-      }
-      cursor = segmentEnd;
-      continue;
-    }
-
-    const hiddenCandidates = segment.slice(0, -1);
-    let finalAssistantIndex = -1;
-    for (let index = hiddenCandidates.length - 1; index >= 0; index -= 1) {
-      const candidate = hiddenCandidates[index];
-      if (candidate.role === 'assistant' && candidate.contentType === 'text') {
-        finalAssistantIndex = index;
-        break;
-      }
-    }
-
-    if (finalAssistantIndex === -1) {
-      items.push({
-        kind: 'reasoning',
-        summaryMessage,
-        hiddenMessages: [...hiddenCandidates],
-      });
-      cursor = segmentEnd;
-      continue;
-    }
-
-    const collapsedMessages = hiddenCandidates.filter((_, index) => index !== finalAssistantIndex);
-    items.push({
-      kind: 'reasoning',
-      summaryMessage,
-      hiddenMessages: collapsedMessages,
-    });
-
-    items.push({
-      kind: 'message',
-      message: hiddenCandidates[finalAssistantIndex],
-    });
-
-    cursor = segmentEnd;
-  }
-
-  return items;
+    return { kind: 'message', message };
+  });
 }
 
 export function createChatHistoryTabContent(
@@ -359,7 +289,7 @@ export function createChatHistoryTabContent(
 
   for (const item of buildChatHistoryRenderItems(history.messages)) {
     if (item.kind === 'reasoning') {
-      messages.append(createReasoningBlock(item.summaryMessage, item.hiddenMessages, filesByMessageId, helpers));
+      messages.append(createReasoningBlock(item.summaryMessage, helpers));
       continue;
     }
 
