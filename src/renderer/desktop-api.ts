@@ -53,6 +53,12 @@ export type TerminalExitPayload = {
   signal?: number;
 };
 
+export type SaveChatHistoryJsonResult = {
+  saved: boolean;
+  filePath: string | null;
+  errorMessage?: string | null;
+};
+
 export type ChatHistoryUpdatePayload = {
   projectId: string;
   chatId: string;
@@ -88,6 +94,7 @@ export type DesktopPocApi = {
   getBootstrap: () => Promise<BootstrapPayload>;
   clearDebugLogs: () => Promise<void>;
   getChatHistory: (projectId: string, chatId: string) => Promise<ChatHistoryRecord | null>;
+  saveChatHistoryJson: (defaultFileName: string, content: string) => Promise<SaveChatHistoryJsonResult>;
   connectProject: (projectId: string) => Promise<ConnectProjectResult>;
   removeProject: (projectId: string) => Promise<boolean>;
   removeChat: (projectId: string, chatId: string) => Promise<boolean>;

@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectRegistry } from './project-registry';
 import { DebugLogEntry } from '../shared/contracts';
@@ -368,6 +369,36 @@ function registerIpc(): void {
     }
 
     return projectRegistry.getChatHistory(payload.projectId, payload.chatId);
+  });
+
+  ipcMain.handle('chat-history:save-json', async (event, payload: { defaultFileName?: string; content?: string }) => {
+    const content = typeof payload?.content === 'string' ? payload.content : '';
+    if (!content) {
+      return { saved: false, filePath: null, errorMessage: 'No chat history JSON content was provided.' };
+    }
+
+    const defaultFileName = typeof payload?.defaultFileName === 'string' && payload.defaultFileName.trim()
+      ? payload.defaultFileName.trim()
+      : 'chat-history.json';
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    const saveOptions = {
+      title: 'Save chat history JSON',
+      defaultPath: defaultFileName,
+      filters: [
+        { name: 'JSON files', extensions: ['json'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    };
+    const result = parentWindow
+      ? await dialog.showSaveDialog(parentWindow, saveOptions)
+      : await dialog.showSaveDialog(saveOptions);
+
+    if (result.canceled || !result.filePath) {
+      return { saved: false, filePath: null, errorMessage: null };
+    }
+
+    await writeFile(result.filePath, content, 'utf8');
+    return { saved: true, filePath: result.filePath, errorMessage: null };
   });
 
   ipcMain.handle('chatgpt-file:register', async (_event, payload: unknown) => {

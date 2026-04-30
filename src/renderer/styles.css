@@ -1516,7 +1516,6 @@ button:disabled:hover {
 }
 
 .chat-history-view-toggle {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   padding: 2px;
@@ -3808,4 +3807,139 @@ button:disabled:hover {
 
 .new-files-tree__git-message {
   margin-top: 6px;
+}
+
+.chat-history-header__controls {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-history-save-json {
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #eef3fb;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-history-save-json:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.chat-history-save-json:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.chat-history-panel[hidden] {
+  display: none !important;
+}
+
+.chat-history-json-tree {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px clamp(20px, 4vw, 44px) 22px;
+  background: #15191f;
+}
+
+.json-tree {
+  min-height: 100%;
+  padding: 12px 14px;
+  border: 1px solid #303641;
+  border-radius: 8px;
+  background: #101419;
+  color: #dce6f2;
+  font: 12px/1.55 Consolas, "Courier New", monospace;
+}
+
+.json-tree__branch {
+  margin: 0;
+}
+
+.json-tree__branch + .json-tree__branch,
+.json-tree__branch + .json-tree__row,
+.json-tree__row + .json-tree__branch,
+.json-tree__row + .json-tree__row {
+  margin-top: 2px;
+}
+
+.json-tree__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 22px;
+  border-radius: 5px;
+  color: #cbd7e8;
+  cursor: pointer;
+  user-select: none;
+}
+
+.json-tree__summary:hover,
+.json-tree__row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.json-tree__children {
+  margin-left: 17px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(112, 137, 165, 0.25);
+}
+
+.json-tree__row {
+  min-height: 22px;
+  border-radius: 5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-tree__key {
+  color: #8fb6ff;
+}
+
+.json-tree__punctuation {
+  color: #6f7d8c;
+}
+
+.json-tree__type,
+.json-tree__count {
+  color: #8a98a9;
+}
+
+.json-tree__value--string {
+  color: #b8e2b2;
+}
+
+.json-tree__value--number {
+  color: #ffd28a;
+}
+
+.json-tree__value--boolean {
+  color: #d4b3ff;
+}
+
+.json-tree__value--null {
+  color: #8a98a9;
+}
+
+.json-tree__expand-string,
+.json-tree__show-more {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid rgba(143, 182, 255, 0.3);
+  border-radius: 999px;
+  background: rgba(91, 167, 255, 0.1);
+  color: #aecdff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.json-tree__expand-string:hover,
+.json-tree__show-more:hover {
+  background: rgba(91, 167, 255, 0.18);
+  color: #eef5ff;
 }

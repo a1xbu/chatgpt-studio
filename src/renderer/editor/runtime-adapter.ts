@@ -68,12 +68,6 @@ export function createEditorRuntimeAdapter(options: EditorRuntimeAdapterOptions)
     },
     openChatHistoryTab: async (project, chat) => {
       if (options.isBrowserPairedWithChat(project.projectId, chat.chatId)) {
-        activatePairedEditorViewRuntime({
-          nextView: 'local',
-          state: options.getState(),
-          setState: options.setState,
-          ...callbacks,
-        });
         await ensureChatHistoryTabRuntime({
           project,
           chat,
@@ -81,6 +75,12 @@ export function createEditorRuntimeAdapter(options: EditorRuntimeAdapterOptions)
           state: options.getState(),
           setState: options.setState,
           maxOpenChatTabs: options.maxOpenChatTabs,
+          ...callbacks,
+        });
+        activatePairedEditorViewRuntime({
+          nextView: 'local',
+          state: options.getState(),
+          setState: options.setState,
           ...callbacks,
         });
         return;

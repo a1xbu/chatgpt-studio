@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('desktopPoc', {
   }),
   clearDebugLogs: () => ipcRenderer.invoke('debug:clear'),
   getChatHistory: (projectId: string, chatId: string) => ipcRenderer.invoke('chat-history:get', { projectId, chatId }),
+  saveChatHistoryJson: (defaultFileName: string, content: string) =>
+    ipcRenderer.invoke('chat-history:save-json', { defaultFileName, content }),
   connectProject: (projectId: string) => ipcRenderer.invoke('project:connect', projectId),
   removeProject: (projectId: string) => ipcRenderer.invoke('project:remove', projectId),
   removeChat: (projectId: string, chatId: string) => ipcRenderer.invoke('chat:remove', { projectId, chatId }),

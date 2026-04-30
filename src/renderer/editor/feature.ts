@@ -530,6 +530,19 @@ export function createEditorFeature(options: EditorFeatureOptions): EditorFeatur
   }
 
   function activatePairedEditorView(nextView: 'browser' | 'local'): void {
+    if (nextView === 'local' && !getPairedChatEditorTab()) {
+      const selection = getPairedChatSelection();
+      const stateSnapshot = options.getCurrentState();
+      const project = selection && stateSnapshot ? options.findSidebarProject(stateSnapshot, selection.projectId) : null;
+      const chat = selection && stateSnapshot ? options.findSidebarChat(stateSnapshot, selection.projectId, selection.chatId) : null;
+      if (project && chat) {
+        void ensureChatHistoryTab(project, chat, false).then(() => {
+          getEditorRuntimeAdapter().activatePairedEditorView('local');
+        });
+        return;
+      }
+    }
+
     getEditorRuntimeAdapter().activatePairedEditorView(nextView);
   }
 
