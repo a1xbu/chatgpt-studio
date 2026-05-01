@@ -2219,10 +2219,11 @@
         const reversedPath: string[] = [];
         let cursor: string | null = currentNodeId;
         while (cursor && !seen.has(cursor)) {
-          const rawEntry: Record<string, unknown> | null = isRecord(mapping[cursor]) ? mapping[cursor] : null;
-          if (!rawEntry) {
+          const rawEntryValue: unknown = mapping[cursor];
+          if (!isRecord(rawEntryValue)) {
             break;
           }
+          const rawEntry = rawEntryValue as Record<string, unknown>;
           seen.add(cursor);
           reversedPath.push(cursor);
           cursor = typeof rawEntry.parent === 'string' ? rawEntry.parent : null;
@@ -2236,10 +2237,11 @@
         if (seen.has(nodeId)) {
           return;
         }
-        const rawEntry: Record<string, unknown> | null = isRecord(mapping[nodeId]) ? mapping[nodeId] : null;
-        if (!rawEntry) {
+        const rawEntryValue: unknown = mapping[nodeId];
+        if (!isRecord(rawEntryValue)) {
           return;
         }
+        const rawEntry = rawEntryValue as Record<string, unknown>;
 
         seen.add(nodeId);
         ordered.push(nodeId);
