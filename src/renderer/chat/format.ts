@@ -4,7 +4,12 @@ export function formatChatMessageTimestamp(
   message: ChatHistoryMessageRecord,
   formatTimestamp: (value: string | null | undefined) => string,
 ): string {
-  return formatTimestamp(message.createdAt ?? message.updatedAt);
+  const timestamp = formatTimestamp(message.createdAt ?? message.updatedAt);
+  const modelSlug = message.modelSlug?.trim();
+  if (timestamp && modelSlug) {
+    return `${timestamp} · ${modelSlug}`;
+  }
+  return modelSlug || timestamp;
 }
 
 export function formatChatMessageRole(role: ChatHistoryMessageRecord['role']): string {

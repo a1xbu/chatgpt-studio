@@ -25,6 +25,19 @@ function isFinalAssistantTextMessage(message: ChatHistoryMessageRecord): boolean
   return Boolean(message.text);
 }
 
+function shouldSkipLocalChatDisplayMessage(message: ChatHistoryMessageRecord): boolean {
+  const contentType = message.contentType ?? null;
+  if (contentType === 'model_editable_context' || contentType === 'user_editable_context') {
+    return true;
+  }
+
+  if (message.role === 'system' && !message.text && !message.parts?.length) {
+    return true;
+  }
+
+  return false;
+}
+
 function isThinkingTrailMessage(message: ChatHistoryMessageRecord): boolean {
   if (message.role === 'user') {
     return false;
@@ -32,7 +45,23 @@ function isThinkingTrailMessage(message: ChatHistoryMessageRecord): boolean {
   if (isFinalAssistantTextMessage(message)) {
     return false;
   }
-  return Boolean(message.text || message.contentType === 'reasoning_recap');
+  if (shouldSkipLocalChatDisplayMessage(message)) {
+    return false;
+  }
+
+  const contentType = message.contentType ?? null;
+  if (
+    message.role === 'tool' ||
+    contentType === 'reasoning_recap' ||
+    contentType === 'thoughts' ||
+    contentType === 'code' ||
+    contentType === 'execution_output' ||
+    contentType === 'tether_browsing_display'
+  ) {
+    return true;
+  }
+
+  return Boolean(message.text || message.parts?.length);
 }
 
 function buildHistoryTurns(
@@ -52,11 +81,15 @@ function buildHistoryTurns(
 
   let current: ChatHistoryTurn | null = null;
   for (const message of history.messages) {
-    if (message.isHidden && !message.text && !message.parts?.length) {
+    if (shouldSkipLocalChatDisplayMessage(message)) {
       continue;
     }
 
     if (message.role === 'user') {
+      if (message.isHidden && !message.text && !message.parts?.length) {
+        continue;
+      }
+
       if (current) {
         turns.push(current);
       }
@@ -116,22 +149,31 @@ function buildHistoryTurns(
   return turns;
 }
 
+function formatToolName(message: ChatHistoryMessageRecord): string {
+  return message.authorName?.trim() || 'tool';
+}
+
 function describeContentType(message: ChatHistoryMessageRecord): string {
+  const toolName = formatToolName(message);
   switch (message.contentType) {
     case 'code':
       return message.language && message.language !== 'unknown'
-        ? `Tool · ${message.language}`
-        : 'Tool · code';
+        ? `Assistant · code · ${message.language}`
+        : 'Assistant · code';
     case 'execution_output':
-      return 'Tool · output';
+      return message.role === 'tool' ? `Tool · ${toolName} · output` : 'Tool · output';
     case 'tether_browsing_display':
-      return 'Tool · browsing';
+      return message.role === 'tool' ? `Tool · ${toolName} · browsing` : 'Tool · browsing';
     case 'multimodal_text':
-      return message.role === 'tool' ? 'Tool · attachment' : 'Multimodal';
+      return message.role === 'tool' ? `Tool · ${toolName}` : 'Multimodal';
     case 'reasoning_recap':
       return 'Reasoning recap';
+    case 'thoughts':
+      return 'Thinking';
     default:
-      return message.contentType ?? message.role;
+      return message.role === 'tool'
+        ? `Tool · ${toolName}`
+        : message.contentType ?? message.role;
   }
 }
 
@@ -275,7 +317,19 @@ function createTrailEntryElement(
     renderReasoningStepsLazy(body, message, helpers);
     reasoningBody = body;
   } else {
-    body.innerHTML = helpers.renderMessageMarkdown(message);
+    const rendered = helpers.renderMessageMarkdown(message);
+    if (rendered) {
+      body.innerHTML = rendered;
+    } else {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'chat-thought-trail__placeholder';
+      placeholder.textContent = message.contentType === 'thoughts'
+        ? 'Thinking'
+        : message.role === 'tool'
+          ? 'No textual tool output captured.'
+          : 'No visible text captured.';
+      body.append(placeholder);
+    }
   }
 
   entry.append(body);

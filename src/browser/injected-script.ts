@@ -18,9 +18,12 @@
   };
   type ExtractedChatHistoryMessage = {
     messageId: string | null;
+    nodeId: string | null;
     parentMessageId: string | null;
     turnId: string | null;
     role: ChatHistoryMessageRole;
+    authorName: string | null;
+    modelSlug: string | null;
     text: string;
     createdAt: string | null;
     updatedAt: string | null;
@@ -28,6 +31,7 @@
     messageType: string | null;
     language: string | null;
     parts: ChatHistoryMultimodalPart[] | null;
+    children: string[] | null;
     isHidden: boolean;
     endTurn: boolean | null;
     status: string | null;
@@ -40,6 +44,7 @@
       stepsLoaded: boolean;
     } | null;
     metadataJson: string | null;
+    rawJson: string | null;
   };
   type HeaderEntries = Array<[string, unknown]>;
   type TrackedXmlHttpRequest = XMLHttpRequest & {
@@ -453,6 +458,25 @@
     } catch {
       return null;
     }
+  }
+
+  function safeStringifyJson(value: unknown): string | null {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return null;
+    }
+  }
+
+  function extractStringList(value: unknown): string[] | null {
+    if (!Array.isArray(value)) {
+      return null;
+    }
+
+    const list = value
+      .map((entry) => (typeof entry === 'string' ? cleanupText(entry) : ''))
+      .filter((entry): entry is string => Boolean(entry));
+    return list.length ? list : [];
   }
 
   function extractReasoningSteps(message: Record<string, unknown>): ChatHistoryReasoningStep[] {
@@ -2060,6 +2084,8 @@
       parentNodeId: string | null;
       parentMessageId: string | null;
       role: ChatHistoryMessageRole;
+      authorName: string | null;
+      modelSlug: string | null;
       text: string;
       createdAt: string | null;
       updatedAt: string | null;
@@ -2071,14 +2097,17 @@
       status: string | null;
       language: string | null;
       parts: ChatHistoryMultimodalPart[] | null;
+      children: string[] | null;
       reasoningSteps: ChatHistoryReasoningStep[];
       reasoningMeta: { finishedDurationSec: number | null; startedAt: string | null; endedAt: string | null };
       metadataJson: string | null;
+      rawJson: string | null;
     };
 
+    const mapping = snapshot.mapping as Record<string, unknown>;
     const snapshotEntries = new Map<string, SnapshotEntry>();
 
-    for (const [nodeId, rawEntry] of Object.entries(snapshot.mapping)) {
+    for (const [nodeId, rawEntry] of Object.entries(mapping)) {
       if (!isRecord(rawEntry) || !isRecord(rawEntry.message)) {
         continue;
       }
@@ -2120,12 +2149,17 @@
         ? extractReasoningMetadata(metadata)
         : { finishedDurationSec: null, startedAt: null, endedAt: null };
 
+      const author = isRecord(message.author) ? message.author : null;
+      const children = extractStringList(rawEntry.children);
+
       snapshotEntries.set(nodeId, {
         messageId: normalizeOptionalText(message.id),
         nodeId,
         parentNodeId: typeof rawEntry.parent === 'string' ? rawEntry.parent : null,
         parentMessageId: null,
-        role: normalizeMessageRole(isRecord(message.author) ? message.author.role : null),
+        role: normalizeMessageRole(author ? author.role : null),
+        authorName: normalizeOptionalText(author?.name),
+        modelSlug: metadata ? normalizeOptionalText(metadata.model_slug) : null,
         text,
         createdAt: normalizeChatTimestampToIso(message.create_time),
         updatedAt: normalizeChatTimestampToIso(message.update_time),
@@ -2137,9 +2171,11 @@
         status,
         language,
         parts,
+        children,
         reasoningSteps,
         reasoningMeta,
         metadataJson: extractPreservedMetadataJson(metadata),
+        rawJson: safeStringifyJson(rawEntry),
       });
     }
 
@@ -2174,43 +2210,83 @@
       return [];
     };
 
+    const buildSnapshotNodeOrder = (): string[] => {
+      const currentNodeId = normalizeOptionalText(snapshot.current_node);
+      const ordered: string[] = [];
+      const seen = new Set<string>();
+
+      if (currentNodeId && Object.prototype.hasOwnProperty.call(mapping, currentNodeId)) {
+        const reversedPath: string[] = [];
+        let cursor: string | null = currentNodeId;
+        while (cursor && !seen.has(cursor)) {
+          const rawEntry = isRecord(mapping[cursor]) ? mapping[cursor] : null;
+          if (!rawEntry) {
+            break;
+          }
+          seen.add(cursor);
+          reversedPath.push(cursor);
+          cursor = typeof rawEntry.parent === 'string' ? rawEntry.parent : null;
+        }
+
+        reversedPath.reverse();
+        ordered.push(...reversedPath);
+      }
+
+      const appendDepthFirst = (nodeId: string): void => {
+        if (seen.has(nodeId)) {
+          return;
+        }
+        const rawEntry = isRecord(mapping[nodeId]) ? mapping[nodeId] : null;
+        if (!rawEntry) {
+          return;
+        }
+
+        seen.add(nodeId);
+        ordered.push(nodeId);
+
+        const children = extractStringList(rawEntry.children) ?? [];
+        for (const childNodeId of children) {
+          appendDepthFirst(childNodeId);
+        }
+      };
+
+      for (const [nodeId, rawEntry] of Object.entries(mapping)) {
+        if (!isRecord(rawEntry)) {
+          continue;
+        }
+
+        if (!rawEntry.parent) {
+          appendDepthFirst(nodeId);
+        }
+      }
+
+      for (const nodeId of Object.keys(mapping)) {
+        appendDepthFirst(nodeId);
+      }
+
+      return ordered;
+    };
+
     const messages: ExtractedChatHistoryMessage[] = [];
-    const seenMessageIds = new Set<string>();
 
-    for (const entry of snapshotEntries.values()) {
-      if (entry.contentType === 'thoughts') {
+    for (const nodeId of buildSnapshotNodeOrder()) {
+      const entry = snapshotEntries.get(nodeId);
+      if (!entry) {
         continue;
-      }
-
-      const isSystemNoise = entry.role === 'system'
-        || entry.contentType === 'model_editable_context'
-        || entry.contentType === 'user_editable_context';
-      if (isSystemNoise && !entry.text && !entry.parts?.length) {
-        continue;
-      }
-
-      if (!entry.text && !entry.parts?.length && entry.contentType !== 'reasoning_recap') {
-        continue;
-      }
-
-      const messageId = entry.messageId;
-      if (messageId && seenMessageIds.has(messageId)) {
-        continue;
-      }
-
-      if (messageId) {
-        seenMessageIds.add(messageId);
       }
 
       const reasoningSteps = entry.contentType === 'reasoning_recap'
         ? findReasoningStepsForRecap(entry)
-        : [];
+        : entry.reasoningSteps;
 
       messages.push({
-        messageId,
+        messageId: entry.messageId,
+        nodeId: entry.nodeId,
         parentMessageId: entry.parentMessageId,
         turnId: entry.turnId,
         role: entry.role,
+        authorName: entry.authorName,
+        modelSlug: entry.modelSlug,
         text: entry.text,
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
@@ -2218,6 +2294,7 @@
         messageType: entry.messageType,
         language: entry.language,
         parts: entry.parts,
+        children: entry.children,
         isHidden: entry.isHidden,
         endTurn: entry.endTurn,
         status: entry.status,
@@ -2231,12 +2308,21 @@
                 steps: reasoningSteps,
                 stepsLoaded: true,
               }
-            : null,
+            : entry.contentType === 'thoughts' && reasoningSteps.length
+              ? {
+                  recap: entry.text || 'Thinking',
+                  finishedDurationSec: null,
+                  startedAt: null,
+                  endedAt: null,
+                  steps: reasoningSteps,
+                  stepsLoaded: true,
+                }
+              : null,
         metadataJson: entry.metadataJson,
+        rawJson: entry.rawJson,
       });
     }
 
-    messages.sort(compareHistoryMessages);
     registerSandboxFilesFromFinalAssistantMessages({
       projectId,
       projectName: knownProjectNames.get(projectId) ?? null,
@@ -2513,9 +2599,12 @@
 
     const messages: ExtractedChatHistoryMessage[] = partialMessages.map((message) => ({
       messageId: message.messageId,
+      nodeId: null,
       parentMessageId: null,
       turnId: null,
       role: message.role,
+      authorName: null,
+      modelSlug: null,
       text: message.text,
       createdAt: message.createdAt,
       updatedAt: message.updatedAt,
@@ -2523,11 +2612,13 @@
       messageType: null,
       language: null,
       parts: null,
+      children: null,
       isHidden: false,
       endTurn: null,
       status: null,
       reasoning: null,
       metadataJson: null,
+      rawJson: null,
     }));
 
     registerSandboxFilesFromFinalAssistantMessages({

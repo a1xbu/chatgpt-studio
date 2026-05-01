@@ -160,9 +160,6 @@ function normalizeHistoryMessageRecord(value: unknown): ChatHistoryMessageRecord
 
   const candidate = value as Record<string, unknown>;
   const text = typeof candidate.text === 'string' ? candidate.text : '';
-  if (!text) {
-    return null;
-  }
 
   const reasoningCandidate =
     candidate.reasoning && typeof candidate.reasoning === 'object' && !Array.isArray(candidate.reasoning)
@@ -206,9 +203,12 @@ function normalizeHistoryMessageRecord(value: unknown): ChatHistoryMessageRecord
 
   return {
     messageId: normalizeNullableText(candidate.messageId ?? candidate.id),
+    nodeId: normalizeNullableText(candidate.nodeId),
     parentMessageId: normalizeNullableText(candidate.parentMessageId),
     turnId: normalizeNullableText(candidate.turnId),
     role: isMessageRole(candidate.role) ? candidate.role : 'unknown',
+    authorName: normalizeNullableText(candidate.authorName),
+    modelSlug: normalizeNullableText(candidate.modelSlug),
     text,
     createdAt: ensureIsoTimestamp(candidate.createdAt),
     updatedAt: ensureIsoTimestamp(candidate.updatedAt),
@@ -216,11 +216,17 @@ function normalizeHistoryMessageRecord(value: unknown): ChatHistoryMessageRecord
     messageType: normalizeNullableText(candidate.messageType),
     language: normalizeNullableText(candidate.language),
     parts,
+    children: Array.isArray(candidate.children)
+      ? candidate.children
+          .map((entry) => (typeof entry === 'string' ? cleanupText(entry) : ''))
+          .filter((entry): entry is string => Boolean(entry))
+      : null,
     isHidden: candidate.isHidden === true,
     endTurn: typeof candidate.endTurn === 'boolean' ? candidate.endTurn : null,
     status: normalizeNullableText(candidate.status),
     reasoning,
     metadataJson: typeof candidate.metadataJson === 'string' ? candidate.metadataJson : null,
+    rawJson: typeof candidate.rawJson === 'string' ? candidate.rawJson : null,
   };
 }
 
@@ -279,11 +285,15 @@ function initializeSchema(db: Database): void {
       parent_message_id TEXT,
       turn_id TEXT,
       role TEXT NOT NULL,
+      author_name TEXT,
+      model_slug TEXT,
+      node_id TEXT,
       content_type TEXT,
       message_type TEXT,
       language TEXT,
       text TEXT NOT NULL,
       parts_json TEXT,
+      children_json TEXT,
       is_hidden INTEGER NOT NULL DEFAULT 0,
       end_turn INTEGER,
       status TEXT,
@@ -294,6 +304,7 @@ function initializeSchema(db: Database): void {
       reasoning_started_at TEXT,
       reasoning_ended_at TEXT,
       metadata_json TEXT,
+      raw_json TEXT,
       PRIMARY KEY (chat_id, message_id)
     );
 
@@ -405,7 +416,12 @@ function initializeSchema(db: Database): void {
   ensureColumn(db, 'project_bundle', 'size_bytes', 'INTEGER');
   ensureColumn(db, 'project_bundle', 'file_count', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'chat_messages', 'parts_json', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'children_json', 'TEXT');
   ensureColumn(db, 'chat_messages', 'metadata_json', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'raw_json', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'author_name', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'model_slug', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'node_id', 'TEXT');
   ensureColumn(db, 'chat_messages', 'reasoning_started_at', 'TEXT');
   ensureColumn(db, 'chat_messages', 'reasoning_ended_at', 'TEXT');
   ensureColumn(db, 'chat_messages', 'reasoning_duration_sec', 'REAL');
@@ -1135,6 +1151,26 @@ function serializeMessageParts(parts: ChatHistoryMultimodalPart[] | null | undef
   }
 }
 
+function serializeStringListJson(values: readonly string[] | null | undefined): string | null {
+  if (!values) {
+    return null;
+  }
+
+  try {
+    return JSON.stringify(values);
+  } catch {
+    return null;
+  }
+}
+
+function serializeHistoryMessagesJson(messages: readonly ChatHistoryMessageRecord[]): string {
+  try {
+    return JSON.stringify(messages);
+  } catch {
+    return '[]';
+  }
+}
+
 function serializeMetadataJson(metadataJson: string | null | undefined): string | null {
   const value = typeof metadataJson === 'string' ? metadataJson.trim() : '';
   return value || null;
@@ -1175,7 +1211,7 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
         history.chatName,
         history.messageCount,
         history.searchText,
-        '[]',
+        serializeHistoryMessagesJson(history.messages),
         history.updatedAt,
         history.capturedAt,
       ]);
@@ -1197,11 +1233,15 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
           parent_message_id,
           turn_id,
           role,
+          author_name,
+          model_slug,
+          node_id,
           content_type,
           message_type,
           language,
           text,
           parts_json,
+          children_json,
           is_hidden,
           end_turn,
           status,
@@ -1211,9 +1251,10 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
           reasoning_duration_sec,
           reasoning_started_at,
           reasoning_ended_at,
-          metadata_json
+          metadata_json,
+          raw_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `);
 
       const insertThought = db.prepare(`
@@ -1245,11 +1286,15 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
           normalizeNullableText(message.parentMessageId),
           normalizeNullableText(message.turnId),
           message.role,
+          normalizeNullableText(message.authorName),
+          normalizeNullableText(message.modelSlug),
+          normalizeNullableText(message.nodeId),
           normalizeNullableText(message.contentType),
           normalizeNullableText(message.messageType),
           normalizeNullableText(message.language),
           message.text,
           serializeMessageParts(message.parts),
+          serializeStringListJson(message.children),
           message.isHidden ? 1 : 0,
           message.endTurn === true ? 1 : message.endTurn === false ? 0 : null,
           normalizeNullableText(message.status),
@@ -1262,6 +1307,7 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
           message.reasoning ? ensureIsoTimestamp(message.reasoning.startedAt) : null,
           message.reasoning ? ensureIsoTimestamp(message.reasoning.endedAt) : null,
           serializeMetadataJson(message.metadataJson),
+          serializeMetadataJson(message.rawJson),
         ]);
 
         if (message.reasoning?.steps?.length) {
@@ -1333,6 +1379,26 @@ export async function deleteChatArtifacts(folderPath: string, chatId: string): P
   });
 }
 
+function parseStringListJson(value: unknown): string[] | null {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed
+      .map((entry) => (typeof entry === 'string' ? cleanupText(entry) : ''))
+      .filter((entry): entry is string => Boolean(entry));
+  } catch {
+    return null;
+  }
+}
+
 function parseMessagePartsJson(value: unknown): ChatHistoryMultimodalPart[] | null {
   const raw = typeof value === 'string' ? value.trim() : '';
   if (!raw) {
@@ -1382,11 +1448,15 @@ function listChatMessagesFromDatabase(
       parent_message_id,
       turn_id,
       role,
+      author_name,
+      model_slug,
+      node_id,
       content_type,
       message_type,
       language,
       text,
       parts_json,
+      children_json,
       is_hidden,
       end_turn,
       status,
@@ -1396,7 +1466,8 @@ function listChatMessagesFromDatabase(
       reasoning_duration_sec,
       reasoning_started_at,
       reasoning_ended_at,
-      metadata_json
+      metadata_json,
+      raw_json
     FROM chat_messages
     WHERE chat_id = ?
     ORDER BY position ASC;
@@ -1435,9 +1506,12 @@ function listChatMessagesFromDatabase(
 
       messages.push({
         messageId: isSyntheticMessageId(messageIdRaw) ? null : messageIdRaw,
+        nodeId: normalizeNullableText(row.node_id),
         parentMessageId: normalizeNullableText(row.parent_message_id),
         turnId: normalizeNullableText(row.turn_id),
         role,
+        authorName: normalizeNullableText(row.author_name),
+        modelSlug: normalizeNullableText(row.model_slug),
         text: typeof row.text === 'string' ? row.text : '',
         createdAt: ensureIsoTimestamp(row.created_at),
         updatedAt: ensureIsoTimestamp(row.updated_at),
@@ -1445,11 +1519,13 @@ function listChatMessagesFromDatabase(
         messageType: normalizeNullableText(row.message_type),
         language: normalizeNullableText(row.language),
         parts: parseMessagePartsJson(row.parts_json),
+        children: parseStringListJson(row.children_json),
         isHidden: Number(row.is_hidden) === 1,
         endTurn: row.end_turn == null || row.end_turn === '' ? null : Number(row.end_turn) === 1,
         status: normalizeNullableText(row.status),
         reasoning,
         metadataJson: normalizeNullableText(row.metadata_json),
+        rawJson: normalizeNullableText(row.raw_json),
       });
     }
   } finally {
@@ -1612,21 +1688,21 @@ export async function getChatHistory(folderPath: string, chatId: string): Promis
           return null;
         }
 
-        let messages = listChatMessagesFromDatabase(db, normalizedChatId);
+        const rawMessages = (() => {
+          try {
+            return JSON.parse(typeof row.history_json === 'string' ? row.history_json : '[]') as unknown;
+          } catch {
+            return [];
+          }
+        })();
+        let messages = Array.isArray(rawMessages)
+          ? rawMessages
+              .map((entry) => normalizeHistoryMessageRecord(entry))
+              .filter((entry): entry is ChatHistoryMessageRecord => Boolean(entry))
+          : [];
 
         if (!messages.length) {
-          const rawMessages = (() => {
-            try {
-              return JSON.parse(typeof row.history_json === 'string' ? row.history_json : '[]') as unknown;
-            } catch {
-              return [];
-            }
-          })();
-          messages = Array.isArray(rawMessages)
-            ? rawMessages
-                .map((entry) => normalizeHistoryMessageRecord(entry))
-                .filter((entry): entry is ChatHistoryMessageRecord => Boolean(entry))
-            : [];
+          messages = listChatMessagesFromDatabase(db, normalizedChatId);
         }
 
         const files = listChatFilesFromDatabase(db, normalizedChatId);

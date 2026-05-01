@@ -166,9 +166,12 @@ export interface ChatHistoryReasoningSummary {
 
 export interface ChatHistoryMessageRecord {
   messageId: string | null;
+  nodeId?: string | null;
   parentMessageId?: string | null;
   turnId?: string | null;
   role: ChatHistoryMessageRole;
+  authorName?: string | null;
+  modelSlug?: string | null;
   text: string;
   createdAt: string | null;
   updatedAt: string | null;
@@ -176,11 +179,13 @@ export interface ChatHistoryMessageRecord {
   messageType?: string | null;
   language?: string | null;
   parts?: ChatHistoryMultimodalPart[] | null;
+  children?: string[] | null;
   isHidden?: boolean;
   endTurn?: boolean | null;
   status?: string | null;
   reasoning?: ChatHistoryReasoningSummary | null;
   metadataJson?: string | null;
+  rawJson?: string | null;
 }
 
 

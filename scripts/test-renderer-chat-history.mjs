@@ -211,11 +211,12 @@ const tab = {
     projectName: 'Project 1',
     chatId: 'chat-1',
     chatName: 'Chat 1',
-    messageCount: 5,
+    messageCount: 6,
     messages: [
       createMessage('user', 'u-1', 'Test the sandbox', '2026-04-25T05:39:48.000Z'),
+      createMessage('assistant', 'thoughts-1', '', '2026-04-25T05:39:49.000Z', 'thoughts', { modelSlug: 'gpt-5-5-thinking' }),
       createMessage('assistant', 'code-1', "bash -lc echo 'hi'", '2026-04-25T05:39:49.573Z', 'code', { language: 'bash' }),
-      createMessage('tool', 'exec-1', 'hi\n', '2026-04-25T05:39:50.000Z', 'execution_output'),
+      createMessage('tool', 'exec-1', 'hi\n', '2026-04-25T05:39:50.000Z', 'execution_output', { authorName: 'container.exec' }),
       createMessage('assistant', 'recap-1', 'Thought for 19s', '2026-04-25T05:40:11.431Z', 'reasoning_recap', {
         reasoning: {
           recap: 'Thought for 19s',
@@ -229,7 +230,7 @@ const tab = {
           ],
         },
       }),
-      createMessage('assistant', 'final-1', longText, '2026-04-25T05:40:12.000Z', 'text'),
+      createMessage('assistant', 'final-1', longText, '2026-04-25T05:40:12.000Z', 'text', { modelSlug: 'gpt-5-5-thinking' }),
     ],
     files: [],
     searchText: '',
@@ -243,7 +244,7 @@ const shell = createChatHistoryTabContent(tab, 'https://chatgpt.com/c/chat-1', {
   formatTimestamp: (value) => value ?? '',
   formatFileSize: (sizeBytes) => (sizeBytes == null ? '' : String(sizeBytes)),
   formatChatMessageRole: (role) => role,
-  formatChatMessageTimestamp: (message) => message.createdAt ?? '',
+  formatChatMessageTimestamp: (message) => message.modelSlug ? String(message.createdAt ?? '') + ' · ' + message.modelSlug : message.createdAt ?? '',
   renderMessageMarkdown: (message) => message.text,
   renderMarkdown: (markdown) => markdown,
   renderGenericFileIcon: () => 'file',
@@ -309,9 +310,10 @@ assert.ok(turnChildren.indexOf(thoughtBlock) < turnChildren.indexOf(finalAssista
 
 assert.equal(findByClass(userMessageElement, 'chat-message__markdown')?.innerHTML, 'Test the sandbox');
 assert.equal(findByClass(finalAssistantElement, 'chat-message__markdown')?.innerHTML, longText);
+assert.equal(findByClass(finalAssistantElement, 'chat-message__time')?.textContent, '2026-04-25T05:40:12.000Z · gpt-5-5-thinking');
 
 assert.equal(findByClass(thoughtBlock, 'chat-thought-block__label')?.textContent, 'Thought for 19s');
-assert.equal(findByClass(thoughtBlock, 'chat-thought-block__meta')?.textContent, '3 steps');
+assert.equal(findByClass(thoughtBlock, 'chat-thought-block__meta')?.textContent, '4 steps');
 
 // trail body is empty until expanded
 assert.equal(findByClass(thoughtBlock, 'chat-thought-block__body')?.children.length ?? 0, 0,
@@ -322,7 +324,9 @@ thoughtBlock.open = true;
 thoughtBlock.dispatchEvent('toggle');
 
 const trailEntries = findAllByClass(thoughtBlock, 'chat-thought-trail__entry');
-assert.equal(trailEntries.length, 3, 'three trail entries: code, execution_output, reasoning_recap');
+assert.equal(trailEntries.length, 4, 'four trail entries: thoughts, code, execution_output, reasoning_recap');
+const trailMetas = trailEntries.map((entry) => findByClass(entry, 'chat-thought-trail__meta')?.textContent);
+assert.deepEqual(trailMetas, ['Thinking', 'Assistant · code · bash', 'Tool · container.exec · output', 'Reasoning recap']);
 
 await Promise.resolve();
 

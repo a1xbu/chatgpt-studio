@@ -1117,9 +1117,6 @@ export class ProjectRegistry {
     }
 
     const text = typeof candidate.text === 'string' ? candidate.text : '';
-    if (!text) {
-      return null;
-    }
 
     const role =
       candidate.role === 'assistant' ||
@@ -1139,9 +1136,12 @@ export class ProjectRegistry {
 
     return {
       messageId: normalizeNullableText(candidate.messageId ?? candidate.id),
+      nodeId: normalizeNullableText(candidate.nodeId),
       parentMessageId: normalizeNullableText(candidate.parentMessageId),
       turnId: normalizeNullableText(candidate.turnId),
       role,
+      authorName: normalizeNullableText(candidate.authorName),
+      modelSlug: normalizeNullableText(candidate.modelSlug),
       text,
       createdAt: ensureNullableTimestamp(candidate.createdAt),
       updatedAt: ensureNullableTimestamp(candidate.updatedAt),
@@ -1162,6 +1162,11 @@ export class ProjectRegistry {
               width: typeof entry.width === 'number' ? entry.width : null,
               height: typeof entry.height === 'number' ? entry.height : null,
             }))
+        : null,
+      children: Array.isArray(candidate.children)
+        ? candidate.children
+            .map((entry) => (typeof entry === 'string' ? cleanupText(entry) : ''))
+            .filter((entry): entry is string => Boolean(entry))
         : null,
       isHidden: candidate.isHidden === true,
       endTurn: typeof candidate.endTurn === 'boolean' ? candidate.endTurn : null,
@@ -1206,6 +1211,7 @@ export class ProjectRegistry {
           }
         : null,
       metadataJson: typeof candidate.metadataJson === 'string' ? candidate.metadataJson : null,
+      rawJson: typeof candidate.rawJson === 'string' ? candidate.rawJson : null,
     };
   }
 
