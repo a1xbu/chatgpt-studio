@@ -1,4 +1,4 @@
-import type { ChatFileRecord, ChatHistoryMessageRecord, ChatHistoryRecord } from '../../shared/contracts';
+import type { ChatFileRecord, ChatHistoryMessageRecord, ChatHistoryReasoningStep, ChatHistoryRecord } from '../../shared/contracts';
 import type { DesktopPocApi } from '../desktop-api';
 import { createJsonTreeView, type JsonTreeValue } from './json-tree';
 import { createChatMarkdownView } from './markdown-view';
@@ -24,6 +24,7 @@ export type ChatHistoryHelpers = {
   renderMessageMarkdown: (message: ChatHistoryMessageRecord) => string;
   renderMarkdown: (markdown: string) => string;
   renderGenericFileIcon: () => string;
+  loadMessageThoughts?: (messageId: string) => Promise<ChatHistoryReasoningStep[]>;
 };
 
 export function createChatHistoryEmptyState(message: string): HTMLDivElement {
@@ -34,7 +35,34 @@ export function createChatHistoryEmptyState(message: string): HTMLDivElement {
 }
 
 export function countReasoningBlocks(history: ChatHistoryRecord | null): number {
-  return history?.messages.filter((message) => message.contentType === 'reasoning_recap').length ?? 0;
+  if (!history) {
+    return 0;
+  }
+
+  let count = 0;
+  let currentTurnHasThinking = false;
+  for (const message of history.messages) {
+    if (message.role === 'user') {
+      if (currentTurnHasThinking) {
+        count += 1;
+      }
+      currentTurnHasThinking = false;
+      continue;
+    }
+
+    if (message.role === 'assistant' && (message.contentType === 'text' || message.contentType === 'multimodal_text')) {
+      continue;
+    }
+
+    if (message.text || message.contentType === 'reasoning_recap') {
+      currentTurnHasThinking = true;
+    }
+  }
+
+  if (currentTurnHasThinking) {
+    count += 1;
+  }
+  return count;
 }
 
 function getChatHistoryViewMode(tab: ChatEditorTabState): ChatHistoryViewMode {

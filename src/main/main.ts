@@ -371,6 +371,17 @@ function registerIpc(): void {
     return projectRegistry.getChatHistory(payload.projectId, payload.chatId);
   });
 
+  ipcMain.handle(
+    'chat-history:get-thoughts',
+    async (_event, payload: { projectId: string; chatId: string; messageId: string }) => {
+      if (!projectRegistry) {
+        throw new Error('Project registry is not ready.');
+      }
+
+      return projectRegistry.getChatMessageThoughts(payload.projectId, payload.chatId, payload.messageId);
+    },
+  );
+
   ipcMain.handle('chat-history:save-json', async (event, payload: { defaultFileName?: string; content?: string }) => {
     const content = typeof payload?.content === 'string' ? payload.content : '';
     if (!content) {

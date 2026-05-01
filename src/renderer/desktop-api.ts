@@ -2,6 +2,7 @@ import type {
   AppStateSnapshot,
   ApplySandboxFileResult,
   ChatFileArchiveEntryRecord,
+  ChatHistoryReasoningStep,
   ChatHistoryRecord,
   DebugLogEntry,
   ProjectBundleRecord,
@@ -94,6 +95,7 @@ export type DesktopPocApi = {
   getBootstrap: () => Promise<BootstrapPayload>;
   clearDebugLogs: () => Promise<void>;
   getChatHistory: (projectId: string, chatId: string) => Promise<ChatHistoryRecord | null>;
+  getChatMessageThoughts: (projectId: string, chatId: string, messageId: string) => Promise<ChatHistoryReasoningStep[]>;
   saveChatHistoryJson: (defaultFileName: string, content: string) => Promise<SaveChatHistoryJsonResult>;
   connectProject: (projectId: string) => Promise<ConnectProjectResult>;
   removeProject: (projectId: string) => Promise<boolean>;

@@ -6,6 +6,7 @@ import {
   ensureProjectMetaDb,
   getChatFile,
   getChatHistory as getPersistedChatHistory,
+  getChatMessageThoughts,
   getProjectBundle,
   listChatFileArchiveEntries,
   listProjectChats,
@@ -71,45 +72,6 @@ function ensureNullableTimestamp(value: unknown): string | null {
 
   const parsed = Date.parse(normalized);
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-}
-
-function resolveLaterTimestamp(left: string | null | undefined, right: string | null | undefined): string | null {
-  const leftMs = left ? Date.parse(left) : Number.NaN;
-  const rightMs = right ? Date.parse(right) : Number.NaN;
-
-  if (!Number.isNaN(leftMs) && !Number.isNaN(rightMs)) {
-    return leftMs >= rightMs ? left ?? null : right ?? null;
-  }
-
-  if (!Number.isNaN(leftMs)) {
-    return left ?? null;
-  }
-
-  if (!Number.isNaN(rightMs)) {
-    return right ?? null;
-  }
-
-  return left ?? right ?? null;
-}
-
-function getHistoryMessageIdentity(message: ChatHistoryMessageRecord): string {
-  return [
-    message.messageId ?? '',
-    message.createdAt ?? '',
-    message.updatedAt ?? '',
-    message.role,
-    message.text.slice(0, 256),
-  ].join('::');
-}
-
-function compareHistoryMessages(left: ChatHistoryMessageRecord, right: ChatHistoryMessageRecord): number {
-  const leftTime = Date.parse(left.createdAt ?? left.updatedAt ?? '') || 0;
-  const rightTime = Date.parse(right.createdAt ?? right.updatedAt ?? '') || 0;
-  if (leftTime !== rightTime) {
-    return leftTime - rightTime;
-  }
-
-  return (left.messageId ?? '').localeCompare(right.messageId ?? '');
 }
 
 function buildHistorySearchText(messages: readonly ChatHistoryMessageRecord[]): string {
@@ -361,18 +323,12 @@ export class ProjectRegistry {
         existingTemporaryChatInOtherProject?.chatName ??
         null,
     );
-    const normalizedHistory: ChatHistoryRecord = {
+    const mergedHistory: ChatHistoryRecord = {
       ...history,
       projectName,
       chatName,
       searchText: history.searchText || buildHistorySearchText(history.messages),
     };
-
-    const historyCandidates = await this.collectChatHistoryCandidates(normalizedHistory.chatId);
-    let mergedHistory = normalizedHistory;
-    for (const candidate of historyCandidates) {
-      mergedHistory = this.mergeChatHistories(candidate, mergedHistory);
-    }
 
     if (binding) {
       let shouldPersistBindings = false;
@@ -381,7 +337,7 @@ export class ProjectRegistry {
         shouldPersistBindings = true;
       }
 
-      const nextBindingUpdatedAt = normalizedHistory.updatedAt ?? normalizedHistory.capturedAt;
+      const nextBindingUpdatedAt = mergedHistory.updatedAt ?? mergedHistory.capturedAt;
       if (binding.updatedAt !== nextBindingUpdatedAt) {
         binding.updatedAt = nextBindingUpdatedAt;
         shouldPersistBindings = true;
@@ -445,10 +401,11 @@ export class ProjectRegistry {
     nextTemporaryProject.projectName = projectName;
     nextTemporaryProject.projectUrl =
       nextTemporaryProject.projectUrl ?? this.lastContext?.projectUrl ?? null;
-    const mergedTemporaryHistory = this.mergeChatHistories(
-      nextTemporaryProject.chatHistories.get(mergedHistory.chatId) ?? null,
-      mergedHistory,
-    );
+    const mergedTemporaryHistory: ChatHistoryRecord = {
+      ...mergedHistory,
+      messageCount: mergedHistory.messages.length,
+      searchText: mergedHistory.searchText || buildHistorySearchText(mergedHistory.messages),
+    };
     nextTemporaryProject.lastSeenAt = mergedTemporaryHistory.updatedAt ?? mergedTemporaryHistory.capturedAt;
     nextTemporaryProject.chatHistories.set(mergedTemporaryHistory.chatId, mergedTemporaryHistory);
     nextTemporaryProject.chats.set(mergedTemporaryHistory.chatId, {
@@ -830,6 +787,26 @@ export class ProjectRegistry {
     return getPersistedChatHistory(binding.folderPath, normalizedChatId);
   }
 
+  public async getChatMessageThoughts(
+    projectId: string,
+    chatId: string,
+    messageId: string,
+  ): Promise<import('../shared/contracts').ChatHistoryReasoningStep[]> {
+    const normalizedProjectId = cleanupText(projectId);
+    const normalizedChatId = cleanupText(chatId);
+    const normalizedMessageId = cleanupText(messageId);
+    if (!normalizedProjectId || !normalizedChatId || !normalizedMessageId) {
+      return [];
+    }
+
+    const binding = this.bindingsByProjectId.get(normalizedProjectId);
+    if (!binding) {
+      return [];
+    }
+
+    return getChatMessageThoughts(binding.folderPath, normalizedChatId, normalizedMessageId);
+  }
+
   public async createBundle(projectId: string): Promise<ProjectBundleRecord> {
     const normalizedProjectId = cleanupText(projectId);
     if (!normalizedProjectId) {
@@ -974,31 +951,6 @@ export class ProjectRegistry {
     }
 
     return locations;
-  }
-
-  private async collectChatHistoryCandidates(chatId: string): Promise<ChatHistoryRecord[]> {
-    const normalizedChatId = cleanupText(chatId);
-    if (!normalizedChatId) {
-      return [];
-    }
-
-    const candidates: ChatHistoryRecord[] = [];
-
-    for (const binding of this.bindingsByProjectId.values()) {
-      const persistedHistory = await getPersistedChatHistory(binding.folderPath, normalizedChatId);
-      if (persistedHistory) {
-        candidates.push(persistedHistory);
-      }
-    }
-
-    if (this.temporaryProject) {
-      const temporaryHistory = this.temporaryProject.chatHistories.get(normalizedChatId) ?? null;
-      if (temporaryHistory) {
-        candidates.push(temporaryHistory);
-      }
-    }
-
-    return candidates;
   }
 
   private async removeChatFromNonTargetProjects(chatId: string, targetProjectId: string): Promise<void> {
@@ -1164,7 +1116,7 @@ export class ProjectRegistry {
       return null;
     }
 
-    const text = normalizeMessageText(candidate.text);
+    const text = typeof candidate.text === 'string' ? candidate.text : '';
     if (!text) {
       return null;
     }
@@ -1178,111 +1130,82 @@ export class ProjectRegistry {
         ? candidate.role
         : 'unknown';
 
+    const reasoningCandidate =
+      candidate.reasoning && typeof candidate.reasoning === 'object' && !Array.isArray(candidate.reasoning)
+        ? (candidate.reasoning as Record<string, unknown>)
+        : null;
+
+    const partsCandidate = Array.isArray(candidate.parts) ? candidate.parts : null;
+
     return {
       messageId: normalizeNullableText(candidate.messageId ?? candidate.id),
+      parentMessageId: normalizeNullableText(candidate.parentMessageId),
+      turnId: normalizeNullableText(candidate.turnId),
       role,
       text,
       createdAt: ensureNullableTimestamp(candidate.createdAt),
       updatedAt: ensureNullableTimestamp(candidate.updatedAt),
       contentType: normalizeNullableText(candidate.contentType),
-      reasoning:
-        candidate.reasoning && typeof candidate.reasoning === 'object' && !Array.isArray(candidate.reasoning)
-          ? {
-              recap:
-                normalizeMessageText((candidate.reasoning as Record<string, unknown>).recap) || text,
-              steps: Array.isArray((candidate.reasoning as Record<string, unknown>).steps)
-                ? ((candidate.reasoning as Record<string, unknown>).steps as unknown[])
-                    .map((rawStep) => {
-                      if (!rawStep || typeof rawStep !== 'object' || Array.isArray(rawStep)) {
-                        return null;
-                      }
-
-                      const candidateStep = rawStep as Record<string, unknown>;
-                      const content = normalizeMessageText(candidateStep.content);
-                      const chunks = Array.isArray(candidateStep.chunks)
-                        ? candidateStep.chunks
-                            .map((entry) => normalizeMessageText(entry))
-                            .filter((entry): entry is string => Boolean(entry))
-                        : [];
-
-                      if (!content && !chunks.length) {
-                        return null;
-                      }
-
-                      return {
-                        summary: normalizeNullableText(candidateStep.summary),
-                        content: content || chunks.join('\n\n'),
-                        chunks,
-                      };
-                    })
-                    .filter(
-                      (
-                        entry,
-                      ): entry is NonNullable<NonNullable<ChatHistoryMessageRecord['reasoning']>['steps']>[number] => Boolean(entry),
-                    )
-                : [],
-            }
-          : null,
-    };
-  }
-
-  private mergeChatHistories(
-    base: ChatHistoryRecord | null,
-    incoming: ChatHistoryRecord,
-  ): ChatHistoryRecord {
-    if (!base) {
-      return {
-        ...incoming,
-        messageCount: incoming.messages.length,
-        searchText: incoming.searchText || buildHistorySearchText(incoming.messages),
-      };
-    }
-
-    const mergedMessages = new Map<string, ChatHistoryMessageRecord>();
-    const upsertMessage = (message: ChatHistoryMessageRecord) => {
-      const identity = getHistoryMessageIdentity(message);
-      const existing = mergedMessages.get(identity);
-      if (!existing) {
-        mergedMessages.set(identity, message);
-        return;
-      }
-
-      mergedMessages.set(identity, {
-        messageId: message.messageId ?? existing.messageId,
-        role: message.role !== 'unknown' ? message.role : existing.role,
-        text: message.text.length >= existing.text.length ? message.text : existing.text,
-        createdAt: resolveLaterTimestamp(existing.createdAt, message.createdAt),
-        updatedAt: resolveLaterTimestamp(existing.updatedAt, message.updatedAt),
-        contentType: message.contentType ?? existing.contentType ?? null,
-        reasoning:
-          message.reasoning && message.reasoning.steps.length
-            ? message.reasoning
-            : existing.reasoning && existing.reasoning.steps.length
-              ? existing.reasoning
-              : message.reasoning ?? existing.reasoning ?? null,
-      });
-    };
-
-    for (const message of base.messages) {
-      upsertMessage(message);
-    }
-
-    for (const message of incoming.messages) {
-      upsertMessage(message);
-    }
-
-    const messages = Array.from(mergedMessages.values()).sort(compareHistoryMessages);
-    return {
-      projectId: incoming.projectId || base.projectId,
-      projectName: incoming.projectName ?? base.projectName,
-      chatId: incoming.chatId || base.chatId,
-      chatName: incoming.chatName ?? base.chatName,
-      messageCount: messages.length,
-      messages,
-      searchText: buildHistorySearchText(messages),
-      updatedAt: resolveLaterTimestamp(base.updatedAt, incoming.updatedAt),
-      capturedAt: resolveLaterTimestamp(base.capturedAt, incoming.capturedAt) ?? incoming.capturedAt,
-      isPartial: Boolean(base.isPartial || incoming.isPartial),
+      messageType: normalizeNullableText(candidate.messageType),
+      language: normalizeNullableText(candidate.language),
+      parts: partsCandidate
+        ? partsCandidate
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+            .map((entry) => ({
+              kind:
+                entry.kind === 'image' || entry.kind === 'attachment' || entry.kind === 'text'
+                  ? entry.kind
+                  : 'unknown',
+              text: typeof entry.text === 'string' ? entry.text : null,
+              assetPointer: typeof entry.assetPointer === 'string' ? entry.assetPointer : null,
+              mimeType: typeof entry.mimeType === 'string' ? entry.mimeType : null,
+              width: typeof entry.width === 'number' ? entry.width : null,
+              height: typeof entry.height === 'number' ? entry.height : null,
+            }))
+        : null,
+      isHidden: candidate.isHidden === true,
+      endTurn: typeof candidate.endTurn === 'boolean' ? candidate.endTurn : null,
+      status: normalizeNullableText(candidate.status),
+      reasoning: reasoningCandidate
+        ? {
+            recap: typeof reasoningCandidate.recap === 'string' && reasoningCandidate.recap ? reasoningCandidate.recap : text,
+            finishedDurationSec:
+              typeof reasoningCandidate.finishedDurationSec === 'number'
+                ? reasoningCandidate.finishedDurationSec
+                : null,
+            startedAt: ensureNullableTimestamp(reasoningCandidate.startedAt),
+            endedAt: ensureNullableTimestamp(reasoningCandidate.endedAt),
+            steps: Array.isArray(reasoningCandidate.steps)
+              ? (reasoningCandidate.steps as unknown[])
+                  .map((rawStep) => {
+                    if (!rawStep || typeof rawStep !== 'object' || Array.isArray(rawStep)) {
+                      return null;
+                    }
+                    const candidateStep = rawStep as Record<string, unknown>;
+                    const content = typeof candidateStep.content === 'string' ? candidateStep.content : '';
+                    const chunks = Array.isArray(candidateStep.chunks)
+                      ? candidateStep.chunks
+                          .map((entry) => (typeof entry === 'string' ? entry : ''))
+                          .filter((entry): entry is string => Boolean(entry))
+                      : [];
+                    if (!content && !chunks.length) {
+                      return null;
+                    }
+                    return {
+                      summary: normalizeNullableText(candidateStep.summary),
+                      content: content || chunks.join('\n\n'),
+                      chunks,
+                    };
+                  })
+                  .filter(
+                    (entry): entry is NonNullable<NonNullable<ChatHistoryMessageRecord['reasoning']>['steps']>[number] =>
+                      Boolean(entry),
+                  )
+              : [],
+            stepsLoaded: reasoningCandidate.stepsLoaded === true,
+          }
+        : null,
+      metadataJson: typeof candidate.metadataJson === 'string' ? candidate.metadataJson : null,
     };
   }
 

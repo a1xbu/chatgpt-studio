@@ -32,7 +32,7 @@ export type CreateRendererEditorFeatureBaseOptionsArgs = {
   browserState: RendererBrowserStoreSlice;
   editorState: RendererEditorStoreSlice;
   store: Pick<RendererStore, 'getEditorRuntimeState' | 'setEditorRuntimeState'>;
-  desktopPoc: Pick<DesktopPocApi, 'readPrompt' | 'writePrompt' | 'getChatHistory'>;
+  desktopPoc: Pick<DesktopPocApi, 'readPrompt' | 'writePrompt' | 'getChatHistory' | 'getChatMessageThoughts'>;
   storage: Storage;
   storageKeys: {
     lastActiveLocalChat: string;
@@ -123,6 +123,10 @@ export function createRendererEditorFeatureBaseOptions(
     },
     addDebugLog: args.addDebugLog,
     getChatHistory: (projectId, chatId) => args.desktopPoc.getChatHistory(projectId, chatId) as Promise<ChatHistoryRecord | null>,
+    getChatMessageThoughts: args.desktopPoc.getChatMessageThoughts
+      ? (projectId: string, chatId: string, messageId: string) =>
+          args.desktopPoc.getChatMessageThoughts(projectId, chatId, messageId)
+      : undefined,
     markdownRenderer: args.markdownRenderer,
     escapeHtml: args.formatters.escapeHtml,
     formatTimestamp: args.formatters.formatTimestamp,

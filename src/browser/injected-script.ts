@@ -8,6 +8,39 @@
     content: string;
     chunks: string[];
   };
+  type ChatHistoryMultimodalPart = {
+    kind: 'text' | 'image' | 'attachment' | 'unknown';
+    text: string | null;
+    assetPointer?: string | null;
+    mimeType?: string | null;
+    width?: number | null;
+    height?: number | null;
+  };
+  type ExtractedChatHistoryMessage = {
+    messageId: string | null;
+    parentMessageId: string | null;
+    turnId: string | null;
+    role: ChatHistoryMessageRole;
+    text: string;
+    createdAt: string | null;
+    updatedAt: string | null;
+    contentType: string | null;
+    messageType: string | null;
+    language: string | null;
+    parts: ChatHistoryMultimodalPart[] | null;
+    isHidden: boolean;
+    endTurn: boolean | null;
+    status: string | null;
+    reasoning: {
+      recap: string;
+      finishedDurationSec: number | null;
+      startedAt: string | null;
+      endedAt: string | null;
+      steps: ChatHistoryReasoningStep[];
+      stepsLoaded: boolean;
+    } | null;
+    metadataJson: string | null;
+  };
   type HeaderEntries = Array<[string, unknown]>;
   type TrackedXmlHttpRequest = XMLHttpRequest & {
     __chatgptDesktopPocUrl?: string;
@@ -251,6 +284,14 @@
         collectTextFragments(content.content, fragments);
       }
 
+      if (typeof content.summary === 'string') {
+        collectTextFragments(content.summary, fragments);
+      }
+
+      if (typeof content.result === 'string') {
+        collectTextFragments(content.result, fragments);
+      }
+
       if (Array.isArray(content.parts)) {
         collectTextFragments(content.parts, fragments);
       }
@@ -261,6 +302,157 @@
     }
 
     return normalizePreviewText(Array.from(new Set(fragments)).join('\n\n')) || null;
+  }
+
+  function extractMultimodalParts(message: Record<string, unknown>): ChatHistoryMultimodalPart[] | null {
+    const content = isRecord(message.content) ? message.content : null;
+    if (!content || !Array.isArray(content.parts) || !content.parts.length) {
+      return null;
+    }
+
+    const parts: ChatHistoryMultimodalPart[] = [];
+    for (const rawPart of content.parts) {
+      if (typeof rawPart === 'string') {
+        const normalized = normalizePreviewText(rawPart);
+        if (normalized) {
+          parts.push({ kind: 'text', text: normalized });
+        }
+        continue;
+      }
+
+      if (!isRecord(rawPart)) {
+        continue;
+      }
+
+      const partType = typeof rawPart.content_type === 'string' ? cleanupText(rawPart.content_type) : '';
+      const assetPointer =
+        typeof rawPart.asset_pointer === 'string'
+          ? cleanupText(rawPart.asset_pointer)
+          : typeof rawPart.image_url === 'string'
+            ? cleanupText(rawPart.image_url)
+            : null;
+      const mimeType = typeof rawPart.mime_type === 'string' ? cleanupText(rawPart.mime_type) : null;
+      const width = typeof rawPart.width === 'number' && Number.isFinite(rawPart.width) ? rawPart.width : null;
+      const height = typeof rawPart.height === 'number' && Number.isFinite(rawPart.height) ? rawPart.height : null;
+      const inlineText = typeof rawPart.text === 'string' ? normalizePreviewText(rawPart.text) : null;
+
+      let kind: ChatHistoryMultimodalPart['kind'] = 'unknown';
+      if (partType.startsWith('image_asset_pointer') || partType === 'image' || (mimeType ?? '').startsWith('image/')) {
+        kind = 'image';
+      } else if (partType === 'real_time_user_audio_video_asset_pointer' || partType === 'audio_asset_pointer') {
+        kind = 'attachment';
+      } else if (assetPointer) {
+        kind = 'attachment';
+      } else if (inlineText) {
+        kind = 'text';
+      }
+
+      parts.push({
+        kind,
+        text: inlineText ?? null,
+        assetPointer: assetPointer ?? null,
+        mimeType: mimeType ?? null,
+        width: width ?? null,
+        height: height ?? null,
+      });
+    }
+
+    return parts.length ? parts : null;
+  }
+
+  function extractCodeMessage(message: Record<string, unknown>): { text: string; language: string | null } {
+    const content = isRecord(message.content) ? message.content : null;
+    const text = typeof content?.text === 'string' ? normalizePreviewText(content.text) : '';
+    const language = content && typeof content.language === 'string' ? cleanupText(content.language) || null : null;
+    return { text, language: language && language !== 'unknown' ? language : null };
+  }
+
+  function extractExecutionOutputText(message: Record<string, unknown>): string {
+    const content = isRecord(message.content) ? message.content : null;
+    if (!content) {
+      return '';
+    }
+
+    const fragments: string[] = [];
+    if (typeof content.text === 'string') {
+      collectTextFragments(content.text, fragments);
+    }
+    if (Array.isArray(content.parts)) {
+      collectTextFragments(content.parts, fragments);
+    }
+    if (typeof content.result === 'string') {
+      collectTextFragments(content.result, fragments);
+    }
+    return fragments.length ? normalizePreviewText(Array.from(new Set(fragments)).join('\n\n')) : '';
+  }
+
+  function extractReasoningMetadata(metadata: Record<string, unknown> | null): {
+    finishedDurationSec: number | null;
+    startedAt: string | null;
+    endedAt: string | null;
+  } {
+    if (!metadata) {
+      return { finishedDurationSec: null, startedAt: null, endedAt: null };
+    }
+
+    const finishedDurationSec =
+      typeof metadata.finished_duration_sec === 'number' && Number.isFinite(metadata.finished_duration_sec)
+        ? metadata.finished_duration_sec
+        : null;
+    const startedAt =
+      typeof metadata.reasoning_start_time === 'number' || typeof metadata.reasoning_start_time === 'string'
+        ? normalizeChatTimestampToIso(metadata.reasoning_start_time)
+        : null;
+    const endedAt =
+      typeof metadata.reasoning_end_time === 'number' || typeof metadata.reasoning_end_time === 'string'
+        ? normalizeChatTimestampToIso(metadata.reasoning_end_time)
+        : null;
+    return { finishedDurationSec, startedAt, endedAt };
+  }
+
+  const PRESERVED_METADATA_KEYS = new Set<string>([
+    'message_type',
+    'finished_duration_sec',
+    'reasoning_status',
+    'reasoning_start_time',
+    'reasoning_end_time',
+    'reasoning_title',
+    'turn_exchange_id',
+    'parent_id',
+    'model_slug',
+    'thinking_effort',
+    'classifier_response',
+    'citations',
+    'content_references',
+    'aggregate_result',
+    'command',
+    'is_visually_hidden_from_conversation',
+    'attachments',
+    'finish_details',
+    'is_complete',
+  ]);
+
+  function extractPreservedMetadataJson(metadata: Record<string, unknown> | null): string | null {
+    if (!metadata) {
+      return null;
+    }
+
+    const preserved: Record<string, unknown> = {};
+    for (const key of Object.keys(metadata)) {
+      if (PRESERVED_METADATA_KEYS.has(key)) {
+        preserved[key] = (metadata as Record<string, unknown>)[key];
+      }
+    }
+
+    if (!Object.keys(preserved).length) {
+      return null;
+    }
+
+    try {
+      return JSON.stringify(preserved);
+    } catch {
+      return null;
+    }
   }
 
   function extractReasoningSteps(message: Record<string, unknown>): ChatHistoryReasoningStep[] {
@@ -379,18 +571,7 @@
     chatId: string;
     chatName: string | null;
     messageCount: number;
-    messages: Array<{
-      messageId: string | null;
-      role: ChatHistoryMessageRole;
-      text: string;
-      createdAt: string | null;
-      updatedAt: string | null;
-      contentType?: string | null;
-      reasoning?: {
-        recap: string;
-        steps: ChatHistoryReasoningStep[];
-      } | null;
-    }>;
+    messages: ExtractedChatHistoryMessage[];
     searchText: string;
     updatedAt: string | null;
     capturedAt: string;
@@ -1864,18 +2045,7 @@
     chatId: string;
     chatName: string | null;
     messageCount: number;
-    messages: Array<{
-      messageId: string | null;
-      role: ChatHistoryMessageRole;
-      text: string;
-      createdAt: string | null;
-      updatedAt: string | null;
-      contentType?: string | null;
-      reasoning?: {
-        recap: string;
-        steps: ChatHistoryReasoningStep[];
-      } | null;
-    }>;
+    messages: ExtractedChatHistoryMessage[];
     searchText: string;
     updatedAt: string | null;
     capturedAt: string;
@@ -1884,33 +2054,29 @@
       return null;
     }
 
-    const messages: Array<{
+    type SnapshotEntry = {
       messageId: string | null;
+      nodeId: string;
+      parentNodeId: string | null;
+      parentMessageId: string | null;
       role: ChatHistoryMessageRole;
       text: string;
       createdAt: string | null;
       updatedAt: string | null;
-      contentType?: string | null;
-      reasoning?: {
-        recap: string;
-        steps: ChatHistoryReasoningStep[];
-      } | null;
-    }> = [];
-    const seenMessageIds = new Set<string>();
-    const snapshotEntries = new Map<
-      string,
-      {
-        messageId: string | null;
-        nodeId: string;
-        parentNodeId: string | null;
-        role: ChatHistoryMessageRole;
-        text: string | null;
-        createdAt: string | null;
-        updatedAt: string | null;
-        contentType: string | null;
-        reasoningSteps: ChatHistoryReasoningStep[];
-      }
-    >();
+      contentType: string | null;
+      messageType: string | null;
+      turnId: string | null;
+      isHidden: boolean;
+      endTurn: boolean | null;
+      status: string | null;
+      language: string | null;
+      parts: ChatHistoryMultimodalPart[] | null;
+      reasoningSteps: ChatHistoryReasoningStep[];
+      reasoningMeta: { finishedDurationSec: number | null; startedAt: string | null; endedAt: string | null };
+      metadataJson: string | null;
+    };
+
+    const snapshotEntries = new Map<string, SnapshotEntry>();
 
     for (const [nodeId, rawEntry] of Object.entries(snapshot.mapping)) {
       if (!isRecord(rawEntry) || !isRecord(rawEntry.message)) {
@@ -1919,21 +2085,75 @@
 
       const message = rawEntry.message;
       const content = isRecord(message.content) ? message.content : null;
+      const metadata = isRecord(message.metadata) ? message.metadata : null;
       const contentType = normalizeOptionalText(content?.content_type);
+      const messageType = metadata && typeof metadata.message_type === 'string'
+        ? cleanupText(metadata.message_type) || null
+        : null;
+      const turnId = metadata && typeof metadata.turn_exchange_id === 'string'
+        ? cleanupText(metadata.turn_exchange_id) || null
+        : null;
+      const isHidden = Boolean(metadata && metadata.is_visually_hidden_from_conversation === true);
+      const endTurn = typeof message.end_turn === 'boolean' ? message.end_turn : null;
+      const status = typeof message.status === 'string' ? cleanupText(message.status) || null : null;
+
+      let text = '';
+      let language: string | null = null;
+      let parts: ChatHistoryMultimodalPart[] | null = null;
+
+      if (contentType === 'code') {
+        const code = extractCodeMessage(message);
+        text = code.text;
+        language = code.language;
+      } else if (contentType === 'execution_output') {
+        text = extractExecutionOutputText(message);
+      } else if (contentType === 'multimodal_text') {
+        const extracted = extractMessageText(message) ?? '';
+        text = extracted;
+        parts = extractMultimodalParts(message);
+      } else {
+        text = extractMessageText(message) ?? '';
+      }
+
+      const reasoningSteps = contentType === 'thoughts' ? extractReasoningSteps(message) : [];
+      const reasoningMeta = contentType === 'reasoning_recap'
+        ? extractReasoningMetadata(metadata)
+        : { finishedDurationSec: null, startedAt: null, endedAt: null };
+
       snapshotEntries.set(nodeId, {
         messageId: normalizeOptionalText(message.id),
         nodeId,
         parentNodeId: typeof rawEntry.parent === 'string' ? rawEntry.parent : null,
+        parentMessageId: null,
         role: normalizeMessageRole(isRecord(message.author) ? message.author.role : null),
-        text: extractMessageText(message),
+        text,
         createdAt: normalizeChatTimestampToIso(message.create_time),
         updatedAt: normalizeChatTimestampToIso(message.update_time),
         contentType,
-        reasoningSteps: contentType === 'thoughts' ? extractReasoningSteps(message) : [],
+        messageType,
+        turnId,
+        isHidden,
+        endTurn,
+        status,
+        language,
+        parts,
+        reasoningSteps,
+        reasoningMeta,
+        metadataJson: extractPreservedMetadataJson(metadata),
       });
     }
 
-    const findReasoningStepsForRecap = (entry: { parentNodeId: string | null }): ChatHistoryReasoningStep[] => {
+    for (const entry of snapshotEntries.values()) {
+      if (!entry.parentNodeId) {
+        continue;
+      }
+      const parent = snapshotEntries.get(entry.parentNodeId);
+      if (parent && parent.messageId) {
+        entry.parentMessageId = parent.messageId;
+      }
+    }
+
+    const findReasoningStepsForRecap = (entry: SnapshotEntry): ChatHistoryReasoningStep[] => {
       let currentNodeId = entry.parentNodeId;
       const visited = new Set<string>();
 
@@ -1954,8 +2174,22 @@
       return [];
     };
 
+    const messages: ExtractedChatHistoryMessage[] = [];
+    const seenMessageIds = new Set<string>();
+
     for (const entry of snapshotEntries.values()) {
       if (entry.contentType === 'thoughts') {
+        continue;
+      }
+
+      const isSystemNoise = entry.role === 'system'
+        || entry.contentType === 'model_editable_context'
+        || entry.contentType === 'user_editable_context';
+      if (isSystemNoise && !entry.text && !entry.parts?.length) {
+        continue;
+      }
+
+      if (!entry.text && !entry.parts?.length && entry.contentType !== 'reasoning_recap') {
         continue;
       }
 
@@ -1964,32 +2198,42 @@
         continue;
       }
 
-      const text = entry.text;
-      if (!text) {
-        continue;
-      }
-
       if (messageId) {
         seenMessageIds.add(messageId);
       }
 
-      const reasoningSteps = entry.contentType === 'reasoning_recap' ? findReasoningStepsForRecap(entry) : [];
+      const reasoningSteps = entry.contentType === 'reasoning_recap'
+        ? findReasoningStepsForRecap(entry)
+        : [];
+
       messages.push({
         messageId,
+        parentMessageId: entry.parentMessageId,
+        turnId: entry.turnId,
         role: entry.role,
-        text,
+        text: entry.text,
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
         contentType: entry.contentType,
+        messageType: entry.messageType,
+        language: entry.language,
+        parts: entry.parts,
+        isHidden: entry.isHidden,
+        endTurn: entry.endTurn,
+        status: entry.status,
         reasoning:
           entry.contentType === 'reasoning_recap'
             ? {
-                recap: text,
+                recap: entry.text,
+                finishedDurationSec: entry.reasoningMeta.finishedDurationSec,
+                startedAt: entry.reasoningMeta.startedAt,
+                endedAt: entry.reasoningMeta.endedAt,
                 steps: reasoningSteps,
+                stepsLoaded: true,
               }
             : null,
+        metadataJson: entry.metadataJson,
       });
-
     }
 
     messages.sort(compareHistoryMessages);
@@ -2243,13 +2487,7 @@
     chatId: string;
     chatName: string | null;
     messageCount: number;
-    messages: Array<{
-      messageId: string | null;
-      role: ChatHistoryMessageRole;
-      text: string;
-      createdAt: string | null;
-      updatedAt: string | null;
-    }>;
+    messages: ExtractedChatHistoryMessage[];
     searchText: string;
     updatedAt: string | null;
     capturedAt: string;
@@ -2266,12 +2504,31 @@
       return null;
     }
 
-    const messages = Array.from(context.messagesByKey.values())
+    const partialMessages = Array.from(context.messagesByKey.values())
       .filter((message) => cleanupText(message.text))
       .sort(compareHistoryMessages);
-    if (!messages.length) {
+    if (!partialMessages.length) {
       return null;
     }
+
+    const messages: ExtractedChatHistoryMessage[] = partialMessages.map((message) => ({
+      messageId: message.messageId,
+      parentMessageId: null,
+      turnId: null,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+      contentType: null,
+      messageType: null,
+      language: null,
+      parts: null,
+      isHidden: false,
+      endTurn: null,
+      status: null,
+      reasoning: null,
+      metadataJson: null,
+    }));
 
     registerSandboxFilesFromFinalAssistantMessages({
       projectId,

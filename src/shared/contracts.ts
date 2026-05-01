@@ -144,17 +144,43 @@ export interface ChatHistoryReasoningStep {
   chunks: string[];
 }
 
+export type ChatHistoryMultimodalPartKind = 'text' | 'image' | 'attachment' | 'unknown';
+
+export interface ChatHistoryMultimodalPart {
+  kind: ChatHistoryMultimodalPartKind;
+  text: string | null;
+  assetPointer?: string | null;
+  mimeType?: string | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface ChatHistoryReasoningSummary {
+  recap: string;
+  finishedDurationSec?: number | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  steps: ChatHistoryReasoningStep[];
+  stepsLoaded?: boolean;
+}
+
 export interface ChatHistoryMessageRecord {
   messageId: string | null;
+  parentMessageId?: string | null;
+  turnId?: string | null;
   role: ChatHistoryMessageRole;
   text: string;
   createdAt: string | null;
   updatedAt: string | null;
   contentType?: string | null;
-  reasoning?: {
-    recap: string;
-    steps: ChatHistoryReasoningStep[];
-  } | null;
+  messageType?: string | null;
+  language?: string | null;
+  parts?: ChatHistoryMultimodalPart[] | null;
+  isHidden?: boolean;
+  endTurn?: boolean | null;
+  status?: string | null;
+  reasoning?: ChatHistoryReasoningSummary | null;
+  metadataJson?: string | null;
 }
 
 

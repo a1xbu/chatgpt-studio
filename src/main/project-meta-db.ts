@@ -6,7 +6,10 @@ import {
   ChatFileRecord,
   GitBundleInspection,
   ChatHistoryMessageRecord,
+  ChatHistoryMessageRole,
+  ChatHistoryMultimodalPart,
   ChatHistoryReasoningStep,
+  ChatHistoryReasoningSummary,
   ChatHistoryRecord,
   ProjectChatRecord,
   ProjectBundleFileRecord,
@@ -156,29 +159,68 @@ function normalizeHistoryMessageRecord(value: unknown): ChatHistoryMessageRecord
   }
 
   const candidate = value as Record<string, unknown>;
-  const text = normalizeMessageText(candidate.text);
+  const text = typeof candidate.text === 'string' ? candidate.text : '';
   if (!text) {
     return null;
   }
 
+  const reasoningCandidate =
+    candidate.reasoning && typeof candidate.reasoning === 'object' && !Array.isArray(candidate.reasoning)
+      ? (candidate.reasoning as Record<string, unknown>)
+      : null;
+
+  const reasoning: ChatHistoryReasoningSummary | null = reasoningCandidate
+    ? {
+        recap: normalizeMessageText(reasoningCandidate.recap) || text,
+        finishedDurationSec:
+          typeof reasoningCandidate.finishedDurationSec === 'number'
+            ? reasoningCandidate.finishedDurationSec
+            : null,
+        startedAt: ensureIsoTimestamp(reasoningCandidate.startedAt),
+        endedAt: ensureIsoTimestamp(reasoningCandidate.endedAt),
+        steps: Array.isArray(reasoningCandidate.steps)
+          ? (reasoningCandidate.steps as unknown[])
+              .map((entry) => normalizeReasoningStep(entry))
+              .filter((entry): entry is ChatHistoryReasoningStep => Boolean(entry))
+          : [],
+        stepsLoaded: reasoningCandidate.stepsLoaded === true,
+      }
+    : null;
+
+  const partsCandidate = Array.isArray(candidate.parts) ? candidate.parts : null;
+  const parts: ChatHistoryMultimodalPart[] | null = partsCandidate
+    ? partsCandidate
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+        .map((entry) => ({
+          kind:
+            entry.kind === 'image' || entry.kind === 'attachment' || entry.kind === 'text'
+              ? entry.kind
+              : 'unknown',
+          text: typeof entry.text === 'string' ? entry.text : null,
+          assetPointer: typeof entry.assetPointer === 'string' ? entry.assetPointer : null,
+          mimeType: typeof entry.mimeType === 'string' ? entry.mimeType : null,
+          width: typeof entry.width === 'number' ? entry.width : null,
+          height: typeof entry.height === 'number' ? entry.height : null,
+        }))
+    : null;
+
   return {
     messageId: normalizeNullableText(candidate.messageId ?? candidate.id),
+    parentMessageId: normalizeNullableText(candidate.parentMessageId),
+    turnId: normalizeNullableText(candidate.turnId),
     role: isMessageRole(candidate.role) ? candidate.role : 'unknown',
     text,
     createdAt: ensureIsoTimestamp(candidate.createdAt),
     updatedAt: ensureIsoTimestamp(candidate.updatedAt),
     contentType: normalizeNullableText(candidate.contentType),
-    reasoning:
-      candidate.reasoning && typeof candidate.reasoning === 'object' && !Array.isArray(candidate.reasoning)
-        ? {
-            recap: normalizeMessageText((candidate.reasoning as Record<string, unknown>).recap) || text,
-            steps: Array.isArray((candidate.reasoning as Record<string, unknown>).steps)
-              ? ((candidate.reasoning as Record<string, unknown>).steps as unknown[])
-                  .map((entry) => normalizeReasoningStep(entry))
-                  .filter((entry): entry is ChatHistoryReasoningStep => Boolean(entry))
-              : [],
-          }
-        : null,
+    messageType: normalizeNullableText(candidate.messageType),
+    language: normalizeNullableText(candidate.language),
+    parts,
+    isHidden: candidate.isHidden === true,
+    endTurn: typeof candidate.endTurn === 'boolean' ? candidate.endTurn : null,
+    status: normalizeNullableText(candidate.status),
+    reasoning,
+    metadataJson: typeof candidate.metadataJson === 'string' ? candidate.metadataJson : null,
   };
 }
 
@@ -229,6 +271,47 @@ function initializeSchema(db: Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_chat_history_project_id ON chat_history(project_id);
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      chat_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      parent_message_id TEXT,
+      turn_id TEXT,
+      role TEXT NOT NULL,
+      content_type TEXT,
+      message_type TEXT,
+      language TEXT,
+      text TEXT NOT NULL,
+      parts_json TEXT,
+      is_hidden INTEGER NOT NULL DEFAULT 0,
+      end_turn INTEGER,
+      status TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      reasoning_recap TEXT,
+      reasoning_duration_sec REAL,
+      reasoning_started_at TEXT,
+      reasoning_ended_at TEXT,
+      metadata_json TEXT,
+      PRIMARY KEY (chat_id, message_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_position ON chat_messages(chat_id, position);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_turn ON chat_messages(chat_id, turn_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(chat_id, parent_message_id);
+
+    CREATE TABLE IF NOT EXISTS chat_message_thoughts (
+      chat_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      step_index INTEGER NOT NULL,
+      summary TEXT,
+      content TEXT NOT NULL,
+      chunks_json TEXT,
+      PRIMARY KEY (chat_id, message_id, step_index)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_message_thoughts_msg ON chat_message_thoughts(chat_id, message_id);
 
     CREATE TABLE IF NOT EXISTS chat_files (
       chat_id TEXT NOT NULL,
@@ -321,6 +404,19 @@ function initializeSchema(db: Database): void {
   ensureColumn(db, 'chat_file_archive_entries', 'crc32', 'INTEGER');
   ensureColumn(db, 'project_bundle', 'size_bytes', 'INTEGER');
   ensureColumn(db, 'project_bundle', 'file_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'chat_messages', 'parts_json', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'metadata_json', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'reasoning_started_at', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'reasoning_ended_at', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'reasoning_duration_sec', 'REAL');
+  ensureColumn(db, 'chat_messages', 'reasoning_recap', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'language', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'message_type', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'turn_id', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'parent_message_id', 'TEXT');
+  ensureColumn(db, 'chat_messages', 'is_hidden', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'chat_messages', 'end_turn', 'INTEGER');
+  ensureColumn(db, 'chat_messages', 'status', 'TEXT');
 }
 
 function ensureColumn(db: Database, tableName: string, columnName: string, columnDefinition: string): void {
@@ -1019,56 +1115,182 @@ export async function upsertProjectBundle(folderPath: string, bundle: ProjectBun
   });
 }
 
+function buildSyntheticMessageId(chatId: string, position: number): string {
+  return `__synthetic__::${chatId}::${String(position).padStart(6, '0')}`;
+}
+
+function isSyntheticMessageId(messageId: string | null): boolean {
+  return typeof messageId === 'string' && messageId.startsWith('__synthetic__::');
+}
+
+function serializeMessageParts(parts: ChatHistoryMultimodalPart[] | null | undefined): string | null {
+  if (!parts || !parts.length) {
+    return null;
+  }
+
+  try {
+    return JSON.stringify(parts);
+  } catch {
+    return null;
+  }
+}
+
+function serializeMetadataJson(metadataJson: string | null | undefined): string | null {
+  const value = typeof metadataJson === 'string' ? metadataJson.trim() : '';
+  return value || null;
+}
+
 export async function upsertChatHistory(folderPath: string, history: ProjectChatHistoryUpsertInput): Promise<void> {
   await withWritableDatabase(folderPath, (db) => {
-    const serializedMessages = JSON.stringify(
-      history.messages.map((message) => ({
-        messageId: message.messageId,
-        role: message.role,
-        text: message.text,
-        createdAt: message.createdAt,
-        updatedAt: message.updatedAt,
-        contentType: message.contentType ?? null,
-        reasoning: message.reasoning ?? null,
-      })),
-    );
+    db.run('BEGIN');
+    try {
+      const historyStatement = db.prepare(`
+        INSERT INTO chat_history (
+          chat_id,
+          project_id,
+          project_name,
+          chat_name,
+          message_count,
+          search_text,
+          history_json,
+          updated_at,
+          captured_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+          project_id = excluded.project_id,
+          project_name = excluded.project_name,
+          chat_name = excluded.chat_name,
+          message_count = excluded.message_count,
+          search_text = excluded.search_text,
+          history_json = excluded.history_json,
+          updated_at = excluded.updated_at,
+          captured_at = excluded.captured_at;
+      `);
 
-    const statement = db.prepare(`
-      INSERT INTO chat_history (
-        chat_id,
-        project_id,
-        project_name,
-        chat_name,
-        message_count,
-        search_text,
-        history_json,
-        updated_at,
-        captured_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(chat_id) DO UPDATE SET
-        project_id = excluded.project_id,
-        project_name = excluded.project_name,
-        chat_name = excluded.chat_name,
-        message_count = excluded.message_count,
-        search_text = excluded.search_text,
-        history_json = excluded.history_json,
-        updated_at = excluded.updated_at,
-        captured_at = excluded.captured_at;
-    `);
+      historyStatement.run([
+        history.chatId,
+        history.projectId,
+        history.projectName,
+        history.chatName,
+        history.messageCount,
+        history.searchText,
+        '[]',
+        history.updatedAt,
+        history.capturedAt,
+      ]);
+      historyStatement.free();
 
-    statement.run([
-      history.chatId,
-      history.projectId,
-      history.projectName,
-      history.chatName,
-      history.messageCount,
-      history.searchText,
-      serializedMessages,
-      history.updatedAt,
-      history.capturedAt,
-    ]);
-    statement.free();
+      const deleteMessages = db.prepare('DELETE FROM chat_messages WHERE chat_id = ?;');
+      deleteMessages.run([history.chatId]);
+      deleteMessages.free();
+
+      const deleteThoughts = db.prepare('DELETE FROM chat_message_thoughts WHERE chat_id = ?;');
+      deleteThoughts.run([history.chatId]);
+      deleteThoughts.free();
+
+      const insertMessage = db.prepare(`
+        INSERT INTO chat_messages (
+          chat_id,
+          message_id,
+          position,
+          parent_message_id,
+          turn_id,
+          role,
+          content_type,
+          message_type,
+          language,
+          text,
+          parts_json,
+          is_hidden,
+          end_turn,
+          status,
+          created_at,
+          updated_at,
+          reasoning_recap,
+          reasoning_duration_sec,
+          reasoning_started_at,
+          reasoning_ended_at,
+          metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `);
+
+      const insertThought = db.prepare(`
+        INSERT INTO chat_message_thoughts (
+          chat_id,
+          message_id,
+          step_index,
+          summary,
+          content,
+          chunks_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?);
+      `);
+
+      const seenMessageIds = new Set<string>();
+      let position = 0;
+      for (const message of history.messages) {
+        const explicitMessageId = normalizeNullableText(message.messageId);
+        let messageId = explicitMessageId;
+        if (!messageId || seenMessageIds.has(messageId)) {
+          messageId = buildSyntheticMessageId(history.chatId, position);
+        }
+        seenMessageIds.add(messageId);
+
+        insertMessage.run([
+          history.chatId,
+          messageId,
+          position,
+          normalizeNullableText(message.parentMessageId),
+          normalizeNullableText(message.turnId),
+          message.role,
+          normalizeNullableText(message.contentType),
+          normalizeNullableText(message.messageType),
+          normalizeNullableText(message.language),
+          message.text,
+          serializeMessageParts(message.parts),
+          message.isHidden ? 1 : 0,
+          message.endTurn === true ? 1 : message.endTurn === false ? 0 : null,
+          normalizeNullableText(message.status),
+          ensureIsoTimestamp(message.createdAt),
+          ensureIsoTimestamp(message.updatedAt),
+          message.reasoning ? message.reasoning.recap : null,
+          message.reasoning && message.reasoning.finishedDurationSec != null
+            ? message.reasoning.finishedDurationSec
+            : null,
+          message.reasoning ? ensureIsoTimestamp(message.reasoning.startedAt) : null,
+          message.reasoning ? ensureIsoTimestamp(message.reasoning.endedAt) : null,
+          serializeMetadataJson(message.metadataJson),
+        ]);
+
+        if (message.reasoning?.steps?.length) {
+          let stepIndex = 0;
+          for (const step of message.reasoning.steps) {
+            const chunksJson = step.chunks?.length ? JSON.stringify(step.chunks) : null;
+            insertThought.run([
+              history.chatId,
+              messageId,
+              stepIndex,
+              step.summary ?? null,
+              step.content,
+              chunksJson,
+            ]);
+            stepIndex += 1;
+          }
+        }
+
+        position += 1;
+      }
+
+      insertMessage.free();
+      insertThought.free();
+
+      db.run('COMMIT');
+    } catch (error) {
+      db.run('ROLLBACK');
+      throw error;
+    }
   });
 }
 
@@ -1094,7 +1316,263 @@ export async function deleteChatArtifacts(folderPath: string, chatId: string): P
     `);
     deleteFilesStatement.run([chatId]);
     deleteFilesStatement.free();
+
+    const deleteMessagesStatement = db.prepare(`
+      DELETE FROM chat_messages
+      WHERE chat_id = ?;
+    `);
+    deleteMessagesStatement.run([chatId]);
+    deleteMessagesStatement.free();
+
+    const deleteThoughtsStatement = db.prepare(`
+      DELETE FROM chat_message_thoughts
+      WHERE chat_id = ?;
+    `);
+    deleteThoughtsStatement.run([chatId]);
+    deleteThoughtsStatement.free();
   });
+}
+
+function parseMessagePartsJson(value: unknown): ChatHistoryMultimodalPart[] | null {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    const parts: ChatHistoryMultimodalPart[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        continue;
+      }
+      const candidate = entry as Record<string, unknown>;
+      const kind = candidate.kind === 'image' || candidate.kind === 'attachment' || candidate.kind === 'text'
+        ? candidate.kind
+        : 'unknown';
+      parts.push({
+        kind,
+        text: typeof candidate.text === 'string' ? candidate.text : null,
+        assetPointer: typeof candidate.assetPointer === 'string' ? candidate.assetPointer : null,
+        mimeType: typeof candidate.mimeType === 'string' ? candidate.mimeType : null,
+        width: typeof candidate.width === 'number' ? candidate.width : null,
+        height: typeof candidate.height === 'number' ? candidate.height : null,
+      });
+    }
+    return parts.length ? parts : null;
+  } catch {
+    return null;
+  }
+}
+
+function listChatMessagesFromDatabase(
+  db: Database,
+  chatId: string,
+  options: { includeThoughts?: boolean } = {},
+): ChatHistoryMessageRecord[] {
+  const includeThoughts = options.includeThoughts === true;
+  const statement = db.prepare(`
+    SELECT
+      message_id,
+      position,
+      parent_message_id,
+      turn_id,
+      role,
+      content_type,
+      message_type,
+      language,
+      text,
+      parts_json,
+      is_hidden,
+      end_turn,
+      status,
+      created_at,
+      updated_at,
+      reasoning_recap,
+      reasoning_duration_sec,
+      reasoning_started_at,
+      reasoning_ended_at,
+      metadata_json
+    FROM chat_messages
+    WHERE chat_id = ?
+    ORDER BY position ASC;
+  `);
+
+  const messages: ChatHistoryMessageRecord[] = [];
+  try {
+    const bindableStatement = statement as typeof statement & {
+      bind?: (values: unknown[] | Record<string, unknown>) => void;
+    };
+    bindableStatement.bind?.([chatId]);
+    while (statement.step()) {
+      const row = statement.getAsObject() as Record<string, unknown>;
+      const messageIdRaw = cleanupText(row.message_id);
+      if (!messageIdRaw) {
+        continue;
+      }
+
+      const role = isMessageRole(row.role) ? row.role : 'unknown';
+      const recap = normalizeNullableText(row.reasoning_recap);
+      const durationRaw = row.reasoning_duration_sec;
+      const finishedDurationSec = typeof durationRaw === 'number' && Number.isFinite(durationRaw)
+        ? durationRaw
+        : durationRaw == null || durationRaw === '' ? null : Number(durationRaw);
+
+      const reasoning: ChatHistoryReasoningSummary | null = recap
+        ? {
+            recap,
+            finishedDurationSec: Number.isFinite(finishedDurationSec) ? Number(finishedDurationSec) : null,
+            startedAt: ensureIsoTimestamp(row.reasoning_started_at),
+            endedAt: ensureIsoTimestamp(row.reasoning_ended_at),
+            steps: [],
+            stepsLoaded: false,
+          }
+        : null;
+
+      messages.push({
+        messageId: isSyntheticMessageId(messageIdRaw) ? null : messageIdRaw,
+        parentMessageId: normalizeNullableText(row.parent_message_id),
+        turnId: normalizeNullableText(row.turn_id),
+        role,
+        text: typeof row.text === 'string' ? row.text : '',
+        createdAt: ensureIsoTimestamp(row.created_at),
+        updatedAt: ensureIsoTimestamp(row.updated_at),
+        contentType: normalizeNullableText(row.content_type),
+        messageType: normalizeNullableText(row.message_type),
+        language: normalizeNullableText(row.language),
+        parts: parseMessagePartsJson(row.parts_json),
+        isHidden: Number(row.is_hidden) === 1,
+        endTurn: row.end_turn == null || row.end_turn === '' ? null : Number(row.end_turn) === 1,
+        status: normalizeNullableText(row.status),
+        reasoning,
+        metadataJson: normalizeNullableText(row.metadata_json),
+      });
+    }
+  } finally {
+    statement.free();
+  }
+
+  if (!includeThoughts) {
+    return messages;
+  }
+
+  const thoughtsStatement = db.prepare(`
+    SELECT message_id, step_index, summary, content, chunks_json
+    FROM chat_message_thoughts
+    WHERE chat_id = ?
+    ORDER BY message_id, step_index ASC;
+  `);
+
+  try {
+    const bindableStatement = thoughtsStatement as typeof thoughtsStatement & {
+      bind?: (values: unknown[] | Record<string, unknown>) => void;
+    };
+    bindableStatement.bind?.([chatId]);
+
+    const stepsByMessageId = new Map<string, ChatHistoryReasoningStep[]>();
+    while (thoughtsStatement.step()) {
+      const row = thoughtsStatement.getAsObject() as Record<string, unknown>;
+      const messageId = cleanupText(row.message_id);
+      const content = typeof row.content === 'string' ? row.content : '';
+      if (!messageId || !content) {
+        continue;
+      }
+      let chunks: string[] = [];
+      if (typeof row.chunks_json === 'string' && row.chunks_json) {
+        try {
+          const parsed = JSON.parse(row.chunks_json);
+          if (Array.isArray(parsed)) {
+            chunks = parsed
+              .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+              .filter((entry): entry is string => Boolean(entry));
+          }
+        } catch {
+          chunks = [];
+        }
+      }
+
+      const list = stepsByMessageId.get(messageId) ?? [];
+      list.push({
+        summary: normalizeNullableText(row.summary),
+        content,
+        chunks,
+      });
+      stepsByMessageId.set(messageId, list);
+    }
+
+    for (const message of messages) {
+      const lookupId = message.messageId ?? null;
+      if (!lookupId || !message.reasoning) {
+        continue;
+      }
+      const steps = stepsByMessageId.get(lookupId);
+      if (steps && steps.length) {
+        message.reasoning.steps = steps;
+        message.reasoning.stepsLoaded = true;
+      }
+    }
+  } finally {
+    thoughtsStatement.free();
+  }
+
+  return messages;
+}
+
+export async function getChatMessageThoughts(
+  folderPath: string,
+  chatId: string,
+  messageId: string,
+): Promise<ChatHistoryReasoningStep[]> {
+  return (
+    (await withExistingDatabase(folderPath, (db) => {
+      const statement = db.prepare(`
+        SELECT step_index, summary, content, chunks_json
+        FROM chat_message_thoughts
+        WHERE chat_id = ? AND message_id = ?
+        ORDER BY step_index ASC;
+      `);
+
+      const steps: ChatHistoryReasoningStep[] = [];
+      try {
+        const bindableStatement = statement as typeof statement & {
+          bind?: (values: unknown[] | Record<string, unknown>) => void;
+        };
+        bindableStatement.bind?.([chatId, messageId]);
+        while (statement.step()) {
+          const row = statement.getAsObject() as Record<string, unknown>;
+          const content = typeof row.content === 'string' ? row.content : '';
+          if (!content) {
+            continue;
+          }
+          let chunks: string[] = [];
+          if (typeof row.chunks_json === 'string' && row.chunks_json) {
+            try {
+              const parsed = JSON.parse(row.chunks_json);
+              if (Array.isArray(parsed)) {
+                chunks = parsed
+                  .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+                  .filter((entry): entry is string => Boolean(entry));
+              }
+            } catch {
+              chunks = [];
+            }
+          }
+          steps.push({
+            summary: normalizeNullableText(row.summary),
+            content,
+            chunks,
+          });
+        }
+      } finally {
+        statement.free();
+      }
+      return steps;
+    })) ?? []
+  );
 }
 
 export async function getChatHistory(folderPath: string, chatId: string): Promise<ChatHistoryRecord | null> {
@@ -1134,16 +1612,23 @@ export async function getChatHistory(folderPath: string, chatId: string): Promis
           return null;
         }
 
-        const rawMessages = (() => {
-          try {
-            return JSON.parse(typeof row.history_json === 'string' ? row.history_json : '[]') as unknown;
-          } catch {
-            return [];
-          }
-        })();
-        const messages = Array.isArray(rawMessages)
-          ? rawMessages.map((entry) => normalizeHistoryMessageRecord(entry)).filter((entry): entry is ChatHistoryMessageRecord => Boolean(entry))
-          : [];
+        let messages = listChatMessagesFromDatabase(db, normalizedChatId);
+
+        if (!messages.length) {
+          const rawMessages = (() => {
+            try {
+              return JSON.parse(typeof row.history_json === 'string' ? row.history_json : '[]') as unknown;
+            } catch {
+              return [];
+            }
+          })();
+          messages = Array.isArray(rawMessages)
+            ? rawMessages
+                .map((entry) => normalizeHistoryMessageRecord(entry))
+                .filter((entry): entry is ChatHistoryMessageRecord => Boolean(entry))
+            : [];
+        }
+
         const files = listChatFilesFromDatabase(db, normalizedChatId);
 
         return {

@@ -184,15 +184,16 @@ function findAllByClass(element, className) {
   return descendants(element).filter((candidate) => hasClass(candidate, className));
 }
 
-function createMessage(messageId, text, createdAt, contentType = 'text', reasoning = null) {
+function createMessage(role, messageId, text, createdAt, contentType = 'text', extras = {}) {
   return {
     messageId,
-    role: 'assistant',
+    role,
     text,
     createdAt,
     updatedAt: null,
     contentType,
-    reasoning,
+    reasoning: null,
+    ...extras,
   };
 }
 
@@ -210,17 +211,25 @@ const tab = {
     projectName: 'Project 1',
     chatId: 'chat-1',
     chatName: 'Chat 1',
-    messageCount: 3,
+    messageCount: 5,
     messages: [
-      createMessage('44d5a24f-8cf8-4927-9617-fa9d08df4f80', 'first assistant answer', '2026-04-25T05:39:49.573Z'),
-      createMessage('57565292-2b9b-41d9-a1b3-ecee8e341d89', longText, '2026-04-25T05:39:51.806Z'),
-      createMessage('673bc037-a4b1-402f-adf4-eeae3bfa9f64', 'Thought for 19s', '2026-04-25T05:40:11.431Z', 'reasoning_recap', {
-        recap: 'Thought for 19s',
-        steps: [
-          { summary: 'Planning MVP PoC for user request', content: 'planning step', chunks: ['planning step'] },
-          { summary: 'Outlining MVP PoC and validation steps', content: 'validation step', chunks: ['validation step'] },
-        ],
+      createMessage('user', 'u-1', 'Test the sandbox', '2026-04-25T05:39:48.000Z'),
+      createMessage('assistant', 'code-1', "bash -lc echo 'hi'", '2026-04-25T05:39:49.573Z', 'code', { language: 'bash' }),
+      createMessage('tool', 'exec-1', 'hi\n', '2026-04-25T05:39:50.000Z', 'execution_output'),
+      createMessage('assistant', 'recap-1', 'Thought for 19s', '2026-04-25T05:40:11.431Z', 'reasoning_recap', {
+        reasoning: {
+          recap: 'Thought for 19s',
+          finishedDurationSec: 19,
+          startedAt: null,
+          endedAt: null,
+          stepsLoaded: true,
+          steps: [
+            { summary: 'Planning MVP PoC for user request', content: 'planning step', chunks: ['planning step'] },
+            { summary: 'Outlining MVP PoC and validation steps', content: 'validation step', chunks: ['validation step'] },
+          ],
+        },
       }),
+      createMessage('assistant', 'final-1', longText, '2026-04-25T05:40:12.000Z', 'text'),
     ],
     files: [],
     searchText: '',
@@ -242,8 +251,11 @@ const shell = createChatHistoryTabContent(tab, 'https://chatgpt.com/c/chat-1', {
 
 const messagesElement = findByClass(shell, 'chat-history-messages');
 assert.ok(messagesElement);
-assert.equal(messagesElement.children.length, 3);
+assert.equal(messagesElement.children.length, 1, 'one turn rendered');
 assert.equal(messagesElement.hidden, false);
+
+const turnElement = messagesElement.children[0];
+assert.ok(hasClass(turnElement, 'chat-turn'));
 
 const jsonTreePanel = findByClass(shell, 'chat-history-json-tree');
 assert.ok(jsonTreePanel);
@@ -279,18 +291,43 @@ saveButton.click();
 await Promise.resolve();
 assert.equal(saveCall.defaultFileName, 'Chat 1.json');
 assert.match(saveCall.content, /\n  "messages": \[\n/);
-assert.match(saveCall.content, /673bc037-a4b1-402f-adf4-eeae3bfa9f64/);
+assert.match(saveCall.content, /recap-1/);
 
-const [first, second, thought] = messagesElement.children;
-assert.ok(hasClass(first, 'chat-message'));
-assert.ok(hasClass(second, 'chat-message'));
-assert.ok(hasClass(thought, 'chat-reasoning'));
-assert.equal(findByClass(first, 'chat-message__markdown')?.innerHTML, 'first assistant answer');
-assert.equal(findByClass(second, 'chat-message__markdown')?.innerHTML, longText);
-assert.equal(findByClass(thought, 'chat-reasoning__label')?.textContent, 'Thought for 19s');
-assert.equal(findByClass(thought, 'chat-reasoning__meta')?.textContent, '2 steps');
-assert.equal(findAllByClass(thought, 'chat-message--nested').length, 0);
-assert.deepEqual(findAllByClass(thought, 'chat-reasoning__step-header').map((element) => element.textContent), [
+const turnChildren = turnElement.children;
+const userMessageElement = turnChildren.find((child) => hasClass(child, 'chat-message--user'));
+const thoughtBlock = turnChildren.find((child) => hasClass(child, 'chat-thought-block'));
+const finalAssistantElement = turnChildren.find((child) => hasClass(child, 'chat-message--assistant'));
+
+assert.ok(userMessageElement, 'user message rendered');
+assert.ok(thoughtBlock, 'thought block rendered between user and assistant');
+assert.ok(finalAssistantElement, 'final assistant message rendered');
+
+// Order: user → thought → assistant
+assert.equal(turnChildren.indexOf(userMessageElement), 0, 'user message first');
+assert.ok(turnChildren.indexOf(thoughtBlock) < turnChildren.indexOf(finalAssistantElement),
+  'thought block precedes final assistant message');
+
+assert.equal(findByClass(userMessageElement, 'chat-message__markdown')?.innerHTML, 'Test the sandbox');
+assert.equal(findByClass(finalAssistantElement, 'chat-message__markdown')?.innerHTML, longText);
+
+assert.equal(findByClass(thoughtBlock, 'chat-thought-block__label')?.textContent, 'Thought for 19s');
+assert.equal(findByClass(thoughtBlock, 'chat-thought-block__meta')?.textContent, '3 steps');
+
+// trail body is empty until expanded
+assert.equal(findByClass(thoughtBlock, 'chat-thought-block__body')?.children.length ?? 0, 0,
+  'trail entries are not rendered before expansion');
+
+// expand and assert lazy rendering
+thoughtBlock.open = true;
+thoughtBlock.dispatchEvent('toggle');
+
+const trailEntries = findAllByClass(thoughtBlock, 'chat-thought-trail__entry');
+assert.equal(trailEntries.length, 3, 'three trail entries: code, execution_output, reasoning_recap');
+
+await Promise.resolve();
+
+const stepHeaders = findAllByClass(thoughtBlock, 'chat-thought-trail__step-header').map((el) => el.textContent);
+assert.deepEqual(stepHeaders, [
   'Planning MVP PoC for user request',
   'Outlining MVP PoC and validation steps',
 ]);

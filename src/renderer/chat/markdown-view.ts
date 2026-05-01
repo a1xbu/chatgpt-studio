@@ -1,15 +1,161 @@
 import type { ChatFileRecord, ChatHistoryMessageRecord, ChatHistoryRecord } from '../../shared/contracts';
 import type { ChatHistoryHelpers } from './history';
+import type { DesktopPocApi } from '../desktop-api';
 
-type ChatHistoryRenderItem =
-  | {
-      kind: 'message';
-      message: ChatHistoryMessageRecord;
+type ChatHistoryTurn = {
+  index: number;
+  userMessages: ChatHistoryMessageRecord[];
+  thinkingTrail: ChatHistoryMessageRecord[];
+  finalAssistantMessages: ChatHistoryMessageRecord[];
+  recap: ChatHistoryMessageRecord | null;
+  files: ChatFileRecord[];
+};
+
+function isFinalAssistantTextMessage(message: ChatHistoryMessageRecord): boolean {
+  if (message.role !== 'assistant') {
+    return false;
+  }
+  if (message.isHidden) {
+    return false;
+  }
+  const contentType = message.contentType ?? null;
+  if (contentType && contentType !== 'text' && contentType !== 'multimodal_text') {
+    return false;
+  }
+  return Boolean(message.text);
+}
+
+function isThinkingTrailMessage(message: ChatHistoryMessageRecord): boolean {
+  if (message.role === 'user') {
+    return false;
+  }
+  if (isFinalAssistantTextMessage(message)) {
+    return false;
+  }
+  return Boolean(message.text || message.contentType === 'reasoning_recap');
+}
+
+function buildHistoryTurns(
+  history: ChatHistoryRecord,
+  filesByMessageId: Map<string, ChatFileRecord[]>,
+): ChatHistoryTurn[] {
+  const turns: ChatHistoryTurn[] = [];
+
+  const beginTurn = (): ChatHistoryTurn => ({
+    index: turns.length,
+    userMessages: [],
+    thinkingTrail: [],
+    finalAssistantMessages: [],
+    recap: null,
+    files: [],
+  });
+
+  let current: ChatHistoryTurn | null = null;
+  for (const message of history.messages) {
+    if (message.isHidden && !message.text && !message.parts?.length) {
+      continue;
     }
-  | {
-      kind: 'reasoning';
-      summaryMessage: ChatHistoryMessageRecord;
-    };
+
+    if (message.role === 'user') {
+      if (current) {
+        turns.push(current);
+      }
+      current = beginTurn();
+      current.userMessages.push(message);
+      continue;
+    }
+
+    if (!current) {
+      current = beginTurn();
+    }
+
+    if (isFinalAssistantTextMessage(message)) {
+      current.finalAssistantMessages.push(message);
+      continue;
+    }
+
+    if (message.contentType === 'reasoning_recap') {
+      current.recap = message;
+    }
+
+    if (isThinkingTrailMessage(message)) {
+      current.thinkingTrail.push(message);
+    }
+  }
+
+  if (current) {
+    turns.push(current);
+  }
+
+  for (const turn of turns) {
+    const seenFileKeys = new Set<string>();
+    const messagesInTurn: ChatHistoryMessageRecord[] = [
+      ...turn.userMessages,
+      ...turn.thinkingTrail,
+      ...turn.finalAssistantMessages,
+    ];
+    for (const message of messagesInTurn) {
+      if (!message.messageId) {
+        continue;
+      }
+      const files = filesByMessageId.get(message.messageId);
+      if (!files) {
+        continue;
+      }
+      for (const file of files) {
+        const key = `${file.messageId}::${file.sandboxPath}`;
+        if (seenFileKeys.has(key)) {
+          continue;
+        }
+        seenFileKeys.add(key);
+        turn.files.push(file);
+      }
+    }
+  }
+
+  return turns;
+}
+
+function describeContentType(message: ChatHistoryMessageRecord): string {
+  switch (message.contentType) {
+    case 'code':
+      return message.language && message.language !== 'unknown'
+        ? `Tool · ${message.language}`
+        : 'Tool · code';
+    case 'execution_output':
+      return 'Tool · output';
+    case 'tether_browsing_display':
+      return 'Tool · browsing';
+    case 'multimodal_text':
+      return message.role === 'tool' ? 'Tool · attachment' : 'Multimodal';
+    case 'reasoning_recap':
+      return 'Reasoning recap';
+    default:
+      return message.contentType ?? message.role;
+  }
+}
+
+function formatThoughtLabel(turn: ChatHistoryTurn): string {
+  if (turn.recap) {
+    const recapText = turn.recap.text || turn.recap.reasoning?.recap;
+    if (recapText) {
+      return recapText;
+    }
+
+    const duration = turn.recap.reasoning?.finishedDurationSec ?? null;
+    if (typeof duration === 'number' && Number.isFinite(duration) && duration > 0) {
+      return `Thought for ${String(Math.round(duration))}s`;
+    }
+
+    return 'Thought';
+  }
+
+  if (turn.thinkingTrail.length) {
+    return 'Thinking…';
+  }
+
+  return 'Thought';
+}
 
 function createChatFileList(files: readonly ChatFileRecord[], helpers: ChatHistoryHelpers): HTMLElement {
   const section = document.createElement('section');
@@ -47,12 +193,12 @@ function createChatFileList(files: readonly ChatFileRecord[], helpers: ChatHisto
     const localPath = document.createElement('div');
     localPath.className = 'chat-file__meta-line';
     localPath.title = file.downloadPath ?? '';
-    localPath.textContent = file.downloadPath ?? ' ';
+    localPath.textContent = file.downloadPath ?? ' ';
     body.append(localPath);
 
     const size = document.createElement('div');
     size.className = 'chat-file__meta-line';
-    size.textContent = helpers.formatFileSize(file.sizeBytes ?? null) || ' ';
+    size.textContent = helpers.formatFileSize(file.sizeBytes ?? null) || ' ';
     body.append(size);
 
     header.append(body);
@@ -80,13 +226,9 @@ function createChatMessageElement(
   message: ChatHistoryMessageRecord,
   files: readonly ChatFileRecord[],
   helpers: ChatHistoryHelpers,
-  options: { nested?: boolean } = {},
 ): HTMLElement {
   const article = document.createElement('article');
   article.className = `chat-message chat-message--${message.role}`;
-  if (options.nested) {
-    article.classList.add('chat-message--nested');
-  }
 
   const metaRow = document.createElement('div');
   metaRow.className = 'chat-message__meta';
@@ -112,78 +254,215 @@ function createChatMessageElement(
   return article;
 }
 
-function createReasoningBlock(
-  summaryMessage: ChatHistoryMessageRecord,
+function createTrailEntryElement(
+  message: ChatHistoryMessageRecord,
+  helpers: ChatHistoryHelpers,
+): { entry: HTMLElement; reasoningBody: HTMLElement | null } {
+  const entry = document.createElement('section');
+  entry.className = `chat-thought-trail__entry chat-thought-trail__entry--${message.contentType ?? message.role}`;
+
+  const meta = document.createElement('div');
+  meta.className = 'chat-thought-trail__meta';
+  meta.textContent = describeContentType(message);
+  entry.append(meta);
+
+  const body = document.createElement('div');
+  body.className = 'chat-thought-trail__body';
+
+  let reasoningBody: HTMLElement | null = null;
+  if (message.contentType === 'reasoning_recap' && message.reasoning) {
+    body.classList.add('chat-thought-trail__body--reasoning-steps');
+    renderReasoningStepsLazy(body, message, helpers);
+    reasoningBody = body;
+  } else {
+    body.innerHTML = helpers.renderMessageMarkdown(message);
+  }
+
+  entry.append(body);
+  return { entry, reasoningBody };
+}
+
+function renderReasoningStepsContent(
+  container: HTMLElement,
+  steps: readonly { summary: string | null; content: string; chunks: string[] }[],
+  helpers: ChatHistoryHelpers,
+): void {
+  container.innerHTML = '';
+  if (!steps.length) {
+    const empty = document.createElement('div');
+    empty.className = 'chat-thought-trail__empty';
+    empty.textContent = 'No captured reasoning steps were found for this recap.';
+    container.append(empty);
+    return;
+  }
+
+  for (const [index, step] of steps.entries()) {
+    const stepElement = document.createElement('section');
+    stepElement.className = 'chat-thought-trail__step';
+
+    const stepHeader = document.createElement('div');
+    stepHeader.className = 'chat-thought-trail__step-header';
+    stepHeader.textContent = step.summary ?? `Thought ${String(index + 1)}`;
+    stepElement.append(stepHeader);
+
+    const stepContent = document.createElement('div');
+    stepContent.className = 'chat-thought-trail__step-content';
+    stepContent.innerHTML = helpers.renderMarkdown(step.content);
+    stepElement.append(stepContent);
+
+    container.append(stepElement);
+  }
+}
+
+function renderReasoningStepsLazy(
+  container: HTMLElement,
+  message: ChatHistoryMessageRecord,
+  helpers: ChatHistoryHelpers,
+): void {
+  const reasoning = message.reasoning;
+  if (!reasoning) {
+    container.textContent = '';
+    return;
+  }
+
+  if (reasoning.stepsLoaded || reasoning.steps.length) {
+    renderReasoningStepsContent(container, reasoning.steps, helpers);
+    return;
+  }
+
+  const placeholder = document.createElement('div');
+  placeholder.className = 'chat-thought-trail__placeholder';
+  placeholder.textContent = 'Thoughts will load when you expand this turn.';
+  container.append(placeholder);
+}
+
+async function ensureReasoningStepsLoaded(
+  message: ChatHistoryMessageRecord,
+  helpers: ChatHistoryHelpers,
+): Promise<void> {
+  const reasoning = message.reasoning;
+  if (!reasoning || reasoning.stepsLoaded || reasoning.steps.length) {
+    return;
+  }
+  if (!message.messageId || !helpers.loadMessageThoughts) {
+    reasoning.stepsLoaded = true;
+    return;
+  }
+
+  try {
+    const steps = await helpers.loadMessageThoughts(message.messageId);
+    reasoning.steps = steps;
+  } catch {
+    reasoning.steps = [];
+  } finally {
+    reasoning.stepsLoaded = true;
+  }
+}
+
+function createThoughtBlock(
+  turn: ChatHistoryTurn,
   helpers: ChatHistoryHelpers,
 ): HTMLElement {
-  const reasoning = summaryMessage.reasoning;
-  const steps = reasoning?.steps ?? [];
   const details = document.createElement('details');
-  details.className = 'chat-reasoning';
+  details.className = 'chat-thought-block';
 
   const summary = document.createElement('summary');
-  summary.className = 'chat-reasoning__summary';
+  summary.className = 'chat-thought-block__summary';
 
   const label = document.createElement('span');
-  label.className = 'chat-reasoning__label';
-  label.textContent = summaryMessage.text || reasoning?.recap || 'Thought';
+  label.className = 'chat-thought-block__label';
+  label.textContent = formatThoughtLabel(turn);
   summary.append(label);
 
-  const meta = document.createElement('span');
-  meta.className = 'chat-reasoning__meta';
-  meta.textContent = steps.length ? `${String(steps.length)} ${steps.length === 1 ? 'step' : 'steps'}` : 'No captured steps';
-  summary.append(meta);
+  if (turn.thinkingTrail.length) {
+    const meta = document.createElement('span');
+    meta.className = 'chat-thought-block__meta';
+    const stepCount = turn.thinkingTrail.length;
+    meta.textContent = `${String(stepCount)} ${stepCount === 1 ? 'step' : 'steps'}`;
+    summary.append(meta);
+  }
 
   details.append(summary);
 
   const body = document.createElement('div');
-  body.className = 'chat-reasoning__body';
-
-  if (steps.length) {
-    for (const [index, step] of steps.entries()) {
-      const stepElement = document.createElement('section');
-      stepElement.className = 'chat-reasoning__step';
-
-      const stepHeader = document.createElement('div');
-      stepHeader.className = 'chat-reasoning__step-header';
-      stepHeader.textContent = step.summary ?? `Thought ${String(index + 1)}`;
-      stepElement.append(stepHeader);
-
-      const stepContent = document.createElement('div');
-      stepContent.className = 'chat-reasoning__step-content';
-      stepContent.innerHTML = helpers.renderMarkdown(step.content);
-      stepElement.append(stepContent);
-
-      body.append(stepElement);
-    }
-  } else {
-    const empty = document.createElement('div');
-    empty.className = 'chat-reasoning__empty';
-    empty.textContent = 'No captured reasoning steps were found for this reasoning recap.';
-    body.append(empty);
-  }
-
+  body.className = 'chat-thought-block__body';
   details.append(body);
+
+  let rendered = false;
+  let recapReasoningContainer: HTMLElement | null = null;
+  const renderTrail = (): void => {
+    if (rendered) {
+      return;
+    }
+    rendered = true;
+    body.innerHTML = '';
+    for (const message of turn.thinkingTrail) {
+      const { entry, reasoningBody } = createTrailEntryElement(message, helpers);
+      if (reasoningBody && message.contentType === 'reasoning_recap') {
+        recapReasoningContainer = reasoningBody;
+      }
+      body.append(entry);
+    }
+  };
+
   details.addEventListener('toggle', () => {
     if (!details.open) {
       return;
+    }
+    renderTrail();
+
+    const recap = turn.recap;
+    if (recap && recap.reasoning && !recap.reasoning.stepsLoaded) {
+      void ensureReasoningStepsLoaded(recap, helpers).then(() => {
+        if (recapReasoningContainer && recap.reasoning) {
+          renderReasoningStepsContent(recapReasoningContainer, recap.reasoning.steps, helpers);
+        }
+      });
     }
 
     requestAnimationFrame(() => {
       summary.scrollIntoView({ block: 'nearest' });
     });
   });
+
   return details;
 }
 
-function buildChatHistoryRenderItems(messages: readonly ChatHistoryMessageRecord[]): ChatHistoryRenderItem[] {
-  return messages.map<ChatHistoryRenderItem>((message) => {
-    if (message.contentType === 'reasoning_recap') {
-      return { kind: 'reasoning', summaryMessage: message };
-    }
+function createTurnElement(
+  turn: ChatHistoryTurn,
+  helpers: ChatHistoryHelpers,
+  filesByMessageId: Map<string, ChatFileRecord[]>,
+): HTMLElement {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'chat-turn';
 
-    return { kind: 'message', message };
-  });
+  for (const userMessage of turn.userMessages) {
+    const messageFiles = userMessage.messageId ? filesByMessageId.get(userMessage.messageId) ?? [] : [];
+    wrapper.append(createChatMessageElement(userMessage, messageFiles, helpers));
+  }
+
+  if (turn.thinkingTrail.length || turn.recap) {
+    wrapper.append(createThoughtBlock(turn, helpers));
+  }
+
+  for (const assistantMessage of turn.finalAssistantMessages) {
+    const messageFiles = assistantMessage.messageId ? filesByMessageId.get(assistantMessage.messageId) ?? [] : [];
+    wrapper.append(createChatMessageElement(assistantMessage, messageFiles, helpers));
+  }
+
+  const handledMessageIds = new Set<string>();
+  for (const message of [...turn.userMessages, ...turn.thinkingTrail, ...turn.finalAssistantMessages]) {
+    if (message.messageId) {
+      handledMessageIds.add(message.messageId);
+    }
+  }
+
+  const unboundFiles = turn.files.filter((file) => !handledMessageIds.has(file.messageId));
+  if (unboundFiles.length) {
+    wrapper.append(createChatFileList(unboundFiles, helpers));
+  }
+
+  return wrapper;
 }
 
 export function createChatMarkdownView(
@@ -210,14 +489,12 @@ export function createChatMarkdownView(
     return messages;
   }
 
-  for (const item of buildChatHistoryRenderItems(history.messages)) {
-    if (item.kind === 'reasoning') {
-      messages.append(createReasoningBlock(item.summaryMessage, helpers));
-      continue;
-    }
-
-    messages.append(createChatMessageElement(item.message, filesByMessageId.get(item.message.messageId ?? '') ?? [], helpers));
+  const turns = buildHistoryTurns(history, filesByMessageId);
+  for (const turn of turns) {
+    messages.append(createTurnElement(turn, helpers, filesByMessageId));
   }
 
   return messages;
 }
+
+export type { DesktopPocApi };

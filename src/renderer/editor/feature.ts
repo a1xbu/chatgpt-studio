@@ -1,5 +1,6 @@
 import type {
   AppStateSnapshot,
+  ChatHistoryReasoningStep,
   ChatHistoryRecord,
   DebugLogEntry,
   ProjectChatRecord,
@@ -124,6 +125,7 @@ export type EditorFeatureOptions = {
     details?: string | null,
   ) => void;
   getChatHistory: (projectId: string, chatId: string) => Promise<ChatHistoryRecord | null>;
+  getChatMessageThoughts?: (projectId: string, chatId: string, messageId: string) => Promise<ChatHistoryReasoningStep[]>;
   markdownRenderer: MarkdownItInstance;
   escapeHtml: (value: string | null | undefined) => string;
   formatTimestamp: (value: string | null | undefined) => string;
@@ -295,6 +297,10 @@ export function createEditorFeature(options: EditorFeatureOptions): EditorFeatur
   }
 
   function createChatHistoryTabContent(tab: ChatEditorTab): HTMLElement {
+    const loadMessageThoughts = options.getChatMessageThoughts
+      ? (messageId: string) => options.getChatMessageThoughts!(tab.projectId, tab.chatId, messageId)
+      : undefined;
+
     return createChatHistoryTabContentImpl(
       tab,
       resolveLocalChatHistoryUrl(tab, tab.history),
@@ -303,11 +309,20 @@ export function createEditorFeature(options: EditorFeatureOptions): EditorFeatur
         formatFileSize: options.formatFileSize,
         formatChatMessageRole,
         formatChatMessageTimestamp: (message) => formatChatMessageTimestamp(message, options.formatTimestamp),
-        renderMessageMarkdown: (message) => message.role === 'tool'
-          ? options.markdownRenderer.render(wrapTextAsMarkdownCodeFence(message.text))
-          : options.markdownRenderer.render(message.text),
+        renderMessageMarkdown: (message) => {
+          if (message.contentType === 'code') {
+            const language = message.language && message.language !== 'unknown' ? message.language : '';
+            const fenced = `\`\`\`${language}\n${message.text}\n\`\`\``;
+            return options.markdownRenderer.render(fenced);
+          }
+          if (message.role === 'tool' || message.contentType === 'execution_output') {
+            return options.markdownRenderer.render(wrapTextAsMarkdownCodeFence(message.text));
+          }
+          return options.markdownRenderer.render(message.text);
+        },
         renderMarkdown: (markdown) => options.markdownRenderer.render(markdown),
         renderGenericFileIcon: options.renderGenericFileIcon,
+        loadMessageThoughts,
       },
     );
   }
