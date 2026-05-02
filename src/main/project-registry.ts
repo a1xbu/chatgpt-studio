@@ -745,6 +745,9 @@ export class ProjectRegistry {
         searchText: history.searchText,
         updatedAt: history.updatedAt,
         capturedAt: history.capturedAt,
+        isPartial: history.isPartial === true,
+        currentNode: history.currentNode ?? null,
+        snapshotJson: history.snapshotJson ?? null,
       });
     }
 
@@ -1107,6 +1110,8 @@ export class ProjectRegistry {
       updatedAt,
       capturedAt,
       isPartial: candidate.isPartial === true,
+      currentNode: normalizeNullableText(candidate.currentNode),
+      snapshotJson: typeof candidate.snapshotJson === 'string' && candidate.snapshotJson ? candidate.snapshotJson : null,
     };
   }
 
@@ -1210,8 +1215,6 @@ export class ProjectRegistry {
             stepsLoaded: reasoningCandidate.stepsLoaded === true,
           }
         : null,
-      metadataJson: typeof candidate.metadataJson === 'string' ? candidate.metadataJson : null,
-      rawJson: typeof candidate.rawJson === 'string' ? candidate.rawJson : null,
     };
   }
 

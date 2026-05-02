@@ -2,11 +2,26 @@ import type { ChatFileRecord, ChatHistoryMessageRecord, ChatHistoryRecord } from
 import type { ChatHistoryHelpers } from './history';
 import type { DesktopPocApi } from '../desktop-api';
 
+const ROOT_PARENT_KEY = '__root__';
+
+type BranchNav = {
+  parentKey: string;
+  total: number;
+  activeIndex: number;
+  siblingNodeIds: string[];
+};
+
+type DisplayItem = {
+  node: ChatHistoryMessageRecord;
+  branchNav: BranchNav | null;
+};
+
 type ChatHistoryTurn = {
   index: number;
-  userMessages: ChatHistoryMessageRecord[];
-  thinkingTrail: ChatHistoryMessageRecord[];
-  finalAssistantMessages: ChatHistoryMessageRecord[];
+  userMessage: ChatHistoryMessageRecord | null;
+  userBranchNav: BranchNav | null;
+  thinkingTrail: Array<{ node: ChatHistoryMessageRecord; branchNav: BranchNav | null }>;
+  finalAssistantMessages: Array<{ node: ChatHistoryMessageRecord; branchNav: BranchNav | null }>;
   recap: ChatHistoryMessageRecord | null;
   files: ChatFileRecord[];
 };
@@ -25,16 +40,14 @@ function isFinalAssistantTextMessage(message: ChatHistoryMessageRecord): boolean
   return Boolean(message.text);
 }
 
-function shouldSkipLocalChatDisplayMessage(message: ChatHistoryMessageRecord): boolean {
+function shouldSkipDisplay(message: ChatHistoryMessageRecord): boolean {
   const contentType = message.contentType ?? null;
   if (contentType === 'model_editable_context' || contentType === 'user_editable_context') {
     return true;
   }
-
   if (message.role === 'system' && !message.text && !message.parts?.length) {
     return true;
   }
-
   return false;
 }
 
@@ -45,43 +58,175 @@ function isThinkingTrailMessage(message: ChatHistoryMessageRecord): boolean {
   if (isFinalAssistantTextMessage(message)) {
     return false;
   }
-  if (shouldSkipLocalChatDisplayMessage(message)) {
+  if (shouldSkipDisplay(message)) {
     return false;
   }
-
   const contentType = message.contentType ?? null;
   if (
-    message.role === 'tool' ||
-    contentType === 'reasoning_recap' ||
-    contentType === 'thoughts' ||
-    contentType === 'code' ||
-    contentType === 'execution_output' ||
-    contentType === 'tether_browsing_display'
+    message.role === 'tool'
+    || contentType === 'reasoning_recap'
+    || contentType === 'thoughts'
+    || contentType === 'code'
+    || contentType === 'execution_output'
+    || contentType === 'tether_browsing_display'
   ) {
     return true;
   }
-
   return Boolean(message.text || message.parts?.length);
 }
 
-function buildHistoryTurns(
+function buildDisplayItems(
   history: ChatHistoryRecord,
+  overrides: Map<string, string>,
+): DisplayItem[] {
+  const messages = history.messages;
+  const byNodeId = new Map<string, ChatHistoryMessageRecord>();
+  const byMessageId = new Map<string, ChatHistoryMessageRecord>();
+  for (const message of messages) {
+    if (message.nodeId) {
+      byNodeId.set(message.nodeId, message);
+    }
+    if (message.messageId) {
+      byMessageId.set(message.messageId, message);
+    }
+  }
+
+  // Legacy / partial fallback: no nodeIds available → linearise the messages
+  // array as-is. Branch navigation becomes a no-op.
+  if (!byNodeId.size) {
+    return messages.map((node) => ({ node, branchNav: null }));
+  }
+
+  const activeChildByParent = new Map(overrides);
+  if (history.currentNode) {
+    let cursor: ChatHistoryMessageRecord | undefined = byNodeId.get(history.currentNode);
+    while (cursor) {
+      const parentKey = cursor.parentMessageId ?? ROOT_PARENT_KEY;
+      if (cursor.nodeId && !activeChildByParent.has(parentKey)) {
+        activeChildByParent.set(parentKey, cursor.nodeId);
+      }
+      const parentMessageId = cursor.parentMessageId;
+      cursor = parentMessageId ? byMessageId.get(parentMessageId) : undefined;
+    }
+  }
+
+  const rootGroups = new Map<string, ChatHistoryMessageRecord[]>();
+  for (const message of messages) {
+    const parentMessageId = message.parentMessageId ?? null;
+    const isRoot = !parentMessageId || !byMessageId.has(parentMessageId);
+    if (!isRoot) {
+      continue;
+    }
+    const list = rootGroups.get(ROOT_PARENT_KEY) ?? [];
+    list.push(message);
+    rootGroups.set(ROOT_PARENT_KEY, list);
+  }
+
+  const items: DisplayItem[] = [];
+  const visited = new Set<string>();
+
+  function pickActiveChild(parentKey: string, candidateNodeIds: string[]): {
+    activeNodeId: string | null;
+    activeIndex: number;
+  } {
+    const filtered = candidateNodeIds.filter((nid) => byNodeId.has(nid));
+    if (!filtered.length) {
+      return { activeNodeId: null, activeIndex: 0 };
+    }
+    const overrideNodeId = activeChildByParent.get(parentKey);
+    const activeNodeId = overrideNodeId && filtered.includes(overrideNodeId)
+      ? overrideNodeId
+      : filtered[filtered.length - 1];
+    return { activeNodeId, activeIndex: filtered.indexOf(activeNodeId) };
+  }
+
+  function walk(node: ChatHistoryMessageRecord | null, branchNav: BranchNav | null): void {
+    let nextBranchNav = branchNav;
+    while (node) {
+      const visitedKey = node.nodeId ?? node.messageId ?? '';
+      if (visitedKey && visited.has(visitedKey)) {
+        break;
+      }
+      if (visitedKey) {
+        visited.add(visitedKey);
+      }
+      items.push({ node, branchNav: nextBranchNav });
+      nextBranchNav = null;
+
+      const childNodeIds = (node.children ?? []).filter((nid) => byNodeId.has(nid));
+      if (!childNodeIds.length) {
+        break;
+      }
+      const parentKey = node.messageId ?? `nodeid:${node.nodeId ?? ''}`;
+      const { activeNodeId, activeIndex } = pickActiveChild(parentKey, childNodeIds);
+      if (!activeNodeId) {
+        break;
+      }
+      const childNode = byNodeId.get(activeNodeId);
+      if (!childNode) {
+        break;
+      }
+      nextBranchNav = childNodeIds.length > 1
+        ? { parentKey, total: childNodeIds.length, activeIndex, siblingNodeIds: childNodeIds }
+        : null;
+      node = childNode;
+    }
+  }
+
+  const rootGroup = rootGroups.get(ROOT_PARENT_KEY) ?? [];
+  const rootNodeIds = rootGroup.map((message) => message.nodeId).filter((id): id is string => Boolean(id));
+  if (rootNodeIds.length) {
+    const { activeNodeId, activeIndex } = pickActiveChild(ROOT_PARENT_KEY, rootNodeIds);
+    if (activeNodeId) {
+      const rootNode = byNodeId.get(activeNodeId);
+      const rootNav: BranchNav | null = rootNodeIds.length > 1
+        ? { parentKey: ROOT_PARENT_KEY, total: rootNodeIds.length, activeIndex, siblingNodeIds: rootNodeIds }
+        : null;
+      walk(rootNode ?? null, rootNav);
+    }
+  }
+
+  // Append truly orphan messages we never reached via the tree walk — i.e.
+  // live-stream deltas that lack node_id / parent links and aren't part of
+  // any other in-tree branch. Alternative branches that *are* reachable in
+  // the snapshot stay hidden behind the branch switcher.
+  for (const message of messages) {
+    const visitedKey = message.nodeId ?? message.messageId ?? '';
+    if (!visitedKey || visited.has(visitedKey)) {
+      continue;
+    }
+    const parentMessageId = message.parentMessageId ?? null;
+    const isOrphan = !parentMessageId || !byMessageId.has(parentMessageId);
+    if (!isOrphan) {
+      continue;
+    }
+    visited.add(visitedKey);
+    items.push({ node: message, branchNav: null });
+  }
+
+  return items;
+}
+
+function buildHistoryTurns(
+  items: readonly DisplayItem[],
   filesByMessageId: Map<string, ChatFileRecord[]>,
 ): ChatHistoryTurn[] {
   const turns: ChatHistoryTurn[] = [];
+  let current: ChatHistoryTurn | null = null;
 
   const beginTurn = (): ChatHistoryTurn => ({
     index: turns.length,
-    userMessages: [],
+    userMessage: null,
+    userBranchNav: null,
     thinkingTrail: [],
     finalAssistantMessages: [],
     recap: null,
     files: [],
   });
 
-  let current: ChatHistoryTurn | null = null;
-  for (const message of history.messages) {
-    if (shouldSkipLocalChatDisplayMessage(message)) {
+  for (const item of items) {
+    const message = item.node;
+    if (shouldSkipDisplay(message)) {
       continue;
     }
 
@@ -89,12 +234,12 @@ function buildHistoryTurns(
       if (message.isHidden && !message.text && !message.parts?.length) {
         continue;
       }
-
       if (current) {
         turns.push(current);
       }
       current = beginTurn();
-      current.userMessages.push(message);
+      current.userMessage = message;
+      current.userBranchNav = item.branchNav;
       continue;
     }
 
@@ -103,7 +248,7 @@ function buildHistoryTurns(
     }
 
     if (isFinalAssistantTextMessage(message)) {
-      current.finalAssistantMessages.push(message);
+      current.finalAssistantMessages.push({ node: message, branchNav: item.branchNav });
       continue;
     }
 
@@ -112,7 +257,7 @@ function buildHistoryTurns(
     }
 
     if (isThinkingTrailMessage(message)) {
-      current.thinkingTrail.push(message);
+      current.thinkingTrail.push({ node: message, branchNav: item.branchNav });
     }
   }
 
@@ -122,16 +267,22 @@ function buildHistoryTurns(
 
   for (const turn of turns) {
     const seenFileKeys = new Set<string>();
-    const messagesInTurn: ChatHistoryMessageRecord[] = [
-      ...turn.userMessages,
-      ...turn.thinkingTrail,
-      ...turn.finalAssistantMessages,
-    ];
-    for (const message of messagesInTurn) {
-      if (!message.messageId) {
-        continue;
+    const messageIds: string[] = [];
+    if (turn.userMessage?.messageId) {
+      messageIds.push(turn.userMessage.messageId);
+    }
+    for (const entry of turn.thinkingTrail) {
+      if (entry.node.messageId) {
+        messageIds.push(entry.node.messageId);
       }
-      const files = filesByMessageId.get(message.messageId);
+    }
+    for (const entry of turn.finalAssistantMessages) {
+      if (entry.node.messageId) {
+        messageIds.push(entry.node.messageId);
+      }
+    }
+    for (const messageId of messageIds) {
+      const files = filesByMessageId.get(messageId);
       if (!files) {
         continue;
       }
@@ -183,19 +334,15 @@ function formatThoughtLabel(turn: ChatHistoryTurn): string {
     if (recapText) {
       return recapText;
     }
-
     const duration = turn.recap.reasoning?.finishedDurationSec ?? null;
     if (typeof duration === 'number' && Number.isFinite(duration) && duration > 0) {
       return `Thought for ${String(Math.round(duration))}s`;
     }
-
     return 'Thought';
   }
-
   if (turn.thinkingTrail.length) {
     return 'Thinking…';
   }
-
   return 'Thought';
 }
 
@@ -264,10 +411,52 @@ function createChatFileList(files: readonly ChatFileRecord[], helpers: ChatHisto
   return section;
 }
 
+function createBranchSwitcher(
+  branchNav: BranchNav,
+  onSwitch: (parentKey: string, nextNodeId: string) => void,
+): HTMLElement {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'chat-branch-switcher';
+
+  const total = branchNav.total;
+  const activeIndex = Math.max(0, Math.min(total - 1, branchNav.activeIndex));
+
+  const prev = document.createElement('button');
+  prev.type = 'button';
+  prev.className = 'chat-branch-switcher__btn';
+  prev.textContent = '◄';
+  prev.title = 'Previous version';
+  prev.disabled = total <= 1;
+  prev.addEventListener('click', () => {
+    const nextIdx = (activeIndex - 1 + total) % total;
+    onSwitch(branchNav.parentKey, branchNav.siblingNodeIds[nextIdx]);
+  });
+
+  const label = document.createElement('span');
+  label.className = 'chat-branch-switcher__label';
+  label.textContent = `${String(activeIndex + 1)} / ${String(total)}`;
+
+  const next = document.createElement('button');
+  next.type = 'button';
+  next.className = 'chat-branch-switcher__btn';
+  next.textContent = '►';
+  next.title = 'Next version';
+  next.disabled = total <= 1;
+  next.addEventListener('click', () => {
+    const nextIdx = (activeIndex + 1) % total;
+    onSwitch(branchNav.parentKey, branchNav.siblingNodeIds[nextIdx]);
+  });
+
+  wrapper.append(prev, label, next);
+  return wrapper;
+}
+
 function createChatMessageElement(
   message: ChatHistoryMessageRecord,
   files: readonly ChatFileRecord[],
   helpers: ChatHistoryHelpers,
+  branchNav: BranchNav | null,
+  onSwitch: (parentKey: string, nextNodeId: string) => void,
 ): HTMLElement {
   const article = document.createElement('article');
   article.className = `chat-message chat-message--${message.role}`;
@@ -279,6 +468,10 @@ function createChatMessageElement(
   role.className = 'chat-message__role';
   role.textContent = helpers.formatChatMessageRole(message.role);
   metaRow.append(role);
+
+  if (branchNav) {
+    metaRow.append(createBranchSwitcher(branchNav, onSwitch));
+  }
 
   const time = document.createElement('span');
   time.className = 'chat-message__time';
@@ -299,6 +492,8 @@ function createChatMessageElement(
 function createTrailEntryElement(
   message: ChatHistoryMessageRecord,
   helpers: ChatHistoryHelpers,
+  branchNav: BranchNav | null,
+  onSwitch: (parentKey: string, nextNodeId: string) => void,
 ): { entry: HTMLElement; reasoningBody: HTMLElement | null } {
   const entry = document.createElement('section');
   entry.className = `chat-thought-trail__entry chat-thought-trail__entry--${message.contentType ?? message.role}`;
@@ -306,6 +501,9 @@ function createTrailEntryElement(
   const meta = document.createElement('div');
   meta.className = 'chat-thought-trail__meta';
   meta.textContent = describeContentType(message);
+  if (branchNav) {
+    meta.append(createBranchSwitcher(branchNav, onSwitch));
+  }
   entry.append(meta);
 
   const body = document.createElement('div');
@@ -378,12 +576,10 @@ function renderReasoningStepsLazy(
     container.textContent = '';
     return;
   }
-
   if (reasoning.stepsLoaded || reasoning.steps.length) {
     renderReasoningStepsContent(container, reasoning.steps, helpers);
     return;
   }
-
   const placeholder = document.createElement('div');
   placeholder.className = 'chat-thought-trail__placeholder';
   placeholder.textContent = 'Thoughts will load when you expand this turn.';
@@ -402,7 +598,6 @@ async function ensureReasoningStepsLoaded(
     reasoning.stepsLoaded = true;
     return;
   }
-
   try {
     const steps = await helpers.loadMessageThoughts(message.messageId);
     reasoning.steps = steps;
@@ -416,6 +611,7 @@ async function ensureReasoningStepsLoaded(
 function createThoughtBlock(
   turn: ChatHistoryTurn,
   helpers: ChatHistoryHelpers,
+  onSwitch: (parentKey: string, nextNodeId: string) => void,
 ): HTMLElement {
   const details = document.createElement('details');
   details.className = 'chat-thought-block';
@@ -450,12 +646,12 @@ function createThoughtBlock(
     }
     rendered = true;
     body.innerHTML = '';
-    for (const message of turn.thinkingTrail) {
-      const { entry, reasoningBody } = createTrailEntryElement(message, helpers);
-      if (reasoningBody && message.contentType === 'reasoning_recap') {
+    for (const entry of turn.thinkingTrail) {
+      const { entry: el, reasoningBody } = createTrailEntryElement(entry.node, helpers, entry.branchNav, onSwitch);
+      if (reasoningBody && entry.node.contentType === 'reasoning_recap') {
         recapReasoningContainer = reasoningBody;
       }
-      body.append(entry);
+      body.append(el);
     }
   };
 
@@ -486,28 +682,41 @@ function createTurnElement(
   turn: ChatHistoryTurn,
   helpers: ChatHistoryHelpers,
   filesByMessageId: Map<string, ChatFileRecord[]>,
+  onSwitch: (parentKey: string, nextNodeId: string) => void,
 ): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'chat-turn';
 
-  for (const userMessage of turn.userMessages) {
-    const messageFiles = userMessage.messageId ? filesByMessageId.get(userMessage.messageId) ?? [] : [];
-    wrapper.append(createChatMessageElement(userMessage, messageFiles, helpers));
+  if (turn.userMessage) {
+    const messageFiles = turn.userMessage.messageId
+      ? filesByMessageId.get(turn.userMessage.messageId) ?? []
+      : [];
+    wrapper.append(createChatMessageElement(turn.userMessage, messageFiles, helpers, turn.userBranchNav, onSwitch));
   }
 
   if (turn.thinkingTrail.length || turn.recap) {
-    wrapper.append(createThoughtBlock(turn, helpers));
+    wrapper.append(createThoughtBlock(turn, helpers, onSwitch));
   }
 
-  for (const assistantMessage of turn.finalAssistantMessages) {
-    const messageFiles = assistantMessage.messageId ? filesByMessageId.get(assistantMessage.messageId) ?? [] : [];
-    wrapper.append(createChatMessageElement(assistantMessage, messageFiles, helpers));
+  for (const entry of turn.finalAssistantMessages) {
+    const messageFiles = entry.node.messageId
+      ? filesByMessageId.get(entry.node.messageId) ?? []
+      : [];
+    wrapper.append(createChatMessageElement(entry.node, messageFiles, helpers, entry.branchNav, onSwitch));
   }
 
   const handledMessageIds = new Set<string>();
-  for (const message of [...turn.userMessages, ...turn.thinkingTrail, ...turn.finalAssistantMessages]) {
-    if (message.messageId) {
-      handledMessageIds.add(message.messageId);
+  if (turn.userMessage?.messageId) {
+    handledMessageIds.add(turn.userMessage.messageId);
+  }
+  for (const entry of turn.thinkingTrail) {
+    if (entry.node.messageId) {
+      handledMessageIds.add(entry.node.messageId);
+    }
+  }
+  for (const entry of turn.finalAssistantMessages) {
+    if (entry.node.messageId) {
+      handledMessageIds.add(entry.node.messageId);
     }
   }
 
@@ -523,32 +732,47 @@ export function createChatMarkdownView(
   history: ChatHistoryRecord,
   helpers: ChatHistoryHelpers,
   createEmptyState: (message: string) => HTMLElement,
+  branchOverridesRef?: { value: Map<string, string> },
 ): HTMLElement {
-  const messages = document.createElement('div');
-  messages.className = 'chat-history-messages chat-history-panel';
+  const panel = document.createElement('div');
+  panel.className = 'chat-history-messages chat-history-panel';
 
   const filesByMessageId = new Map<string, ChatFileRecord[]>();
   for (const file of history.files ?? []) {
     if (!file.messageId) {
       continue;
     }
-
     const existing = filesByMessageId.get(file.messageId) ?? [];
     existing.push(file);
     filesByMessageId.set(file.messageId, existing);
   }
 
   if (!history.messages.length) {
-    messages.append(createEmptyState('No text messages were extracted from this conversation snapshot yet.'));
-    return messages;
+    panel.append(createEmptyState('No text messages were extracted from this conversation snapshot yet.'));
+    return panel;
   }
 
-  const turns = buildHistoryTurns(history, filesByMessageId);
-  for (const turn of turns) {
-    messages.append(createTurnElement(turn, helpers, filesByMessageId));
-  }
+  const overrides = branchOverridesRef ?? { value: new Map<string, string>() };
 
-  return messages;
+  const render = (): void => {
+    panel.innerHTML = '';
+    const items = buildDisplayItems(history, overrides.value);
+    const turns = buildHistoryTurns(items, filesByMessageId);
+    if (!turns.length) {
+      panel.append(createEmptyState('No text messages to display in the active branch.'));
+      return;
+    }
+    const onSwitch = (parentKey: string, nextNodeId: string): void => {
+      overrides.value.set(parentKey, nextNodeId);
+      render();
+    };
+    for (const turn of turns) {
+      panel.append(createTurnElement(turn, helpers, filesByMessageId, onSwitch));
+    }
+  };
+
+  render();
+  return panel;
 }
 
 export type { DesktopPocApi };

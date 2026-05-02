@@ -10,7 +10,7 @@
     "build:ts": "node ./node_modules/typescript/lib/tsc.js -p ./tsconfig.json",
     "start:electron": "electron .",
     "start": "npm run build && npm run start:electron",
-    "start:debug": "npm run build && electron . --debug",
+    "start:debug": "npm run build && electron . --debug-capture",
     "dev": "npm run start",
     "typecheck": "node ./node_modules/typescript/lib/tsc.js -p ./tsconfig.json --noEmit",
     "smoke:renderer": "node ./scripts/smoke-renderer-startup.mjs",

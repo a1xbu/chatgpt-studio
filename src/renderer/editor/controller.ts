@@ -256,6 +256,7 @@ export function ensureChatHistoryTab(
     isHistoryStale: false,
     renderedContent: null,
     historyScrollTop: null,
+    branchOverrides: null,
   };
 
   const chatTabs = options.editorTabs.filter((tab): tab is ChatEditorTab => tab.kind === 'chat');

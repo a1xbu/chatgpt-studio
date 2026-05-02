@@ -14,6 +14,7 @@ export type ChatEditorTabState = {
   history: ChatHistoryRecord | null;
   message: string | null;
   viewMode?: ChatHistoryViewMode;
+  branchOverrides?: Map<string, string> | null;
 };
 
 export type ChatHistoryHelpers = {
@@ -243,8 +244,14 @@ export function createChatHistoryTabContent(
   const shell = document.createElement('div');
   shell.className = 'chat-history-shell';
   const initialViewMode = getChatHistoryViewMode(tab);
-  const markdownPanel = createChatMarkdownView(history, helpers, createChatHistoryEmptyState);
-  const jsonTreePanel = createJsonTreeView(history as unknown as JsonTreeValue, { rootLabel: 'history' });
+
+  if (!tab.branchOverrides) {
+    tab.branchOverrides = new Map<string, string>();
+  }
+  const overridesRef = { value: tab.branchOverrides };
+
+  const markdownPanel = createChatMarkdownView(history, helpers, createChatHistoryEmptyState, overridesRef);
+  const jsonTreePanel = createJsonTreeView(parseSnapshotForJsonView(history), { rootLabel: 'snapshot' });
 
   shell.append(createChatHistoryHeader({
     tab,
@@ -260,4 +267,45 @@ export function createChatHistoryTabContent(
   setChatHistoryViewMode(tab, shell, markdownPanel, jsonTreePanel, initialViewMode);
 
   return shell;
+}
+
+function parseSnapshotForJsonView(history: ChatHistoryRecord): JsonTreeValue {
+  if (history.snapshotJson) {
+    try {
+      return JSON.parse(history.snapshotJson) as JsonTreeValue;
+    } catch {
+      // fall through
+    }
+  }
+  // Fallback: synthesize a snapshot-shaped object from the message records.
+  const mapping: Record<string, JsonTreeValue> = {};
+  for (const message of history.messages) {
+    const key = message.nodeId ?? message.messageId ?? '';
+    if (!key) {
+      continue;
+    }
+    mapping[key] = {
+      id: message.nodeId ?? null,
+      message: {
+        id: message.messageId ?? null,
+        author: { role: message.role, name: message.authorName ?? null },
+        create_time: message.createdAt,
+        update_time: message.updatedAt,
+        content: { content_type: message.contentType ?? null, parts: [message.text] },
+        status: message.status ?? null,
+        end_turn: message.endTurn ?? null,
+        metadata: { model_slug: message.modelSlug ?? null, message_type: message.messageType ?? null },
+      },
+      parent: message.parentMessageId ?? null,
+      children: message.children ?? [],
+    } as JsonTreeValue;
+  }
+  return {
+    chat_id: history.chatId,
+    title: history.chatName,
+    current_node: history.currentNode ?? null,
+    captured_at: history.capturedAt,
+    updated_at: history.updatedAt,
+    mapping,
+  } as JsonTreeValue;
 }

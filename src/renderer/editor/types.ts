@@ -43,6 +43,7 @@ export type ChatEditorTab = {
   isHistoryStale: boolean;
   renderedContent: HTMLElement | null;
   historyScrollTop: number | null;
+  branchOverrides: Map<string, string> | null;
 };
 
 export type EditorTabState = BrowserEditorTab | ChatEditorTab | PromptEditorTab;

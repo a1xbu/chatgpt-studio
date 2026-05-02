@@ -43,8 +43,6 @@
       steps: ChatHistoryReasoningStep[];
       stepsLoaded: boolean;
     } | null;
-    metadataJson: string | null;
-    rawJson: string | null;
   };
   type HeaderEntries = Array<[string, unknown]>;
   type TrackedXmlHttpRequest = XMLHttpRequest & {
@@ -415,51 +413,6 @@
     return { finishedDurationSec, startedAt, endedAt };
   }
 
-  const PRESERVED_METADATA_KEYS = new Set<string>([
-    'message_type',
-    'finished_duration_sec',
-    'reasoning_status',
-    'reasoning_start_time',
-    'reasoning_end_time',
-    'reasoning_title',
-    'turn_exchange_id',
-    'parent_id',
-    'model_slug',
-    'thinking_effort',
-    'classifier_response',
-    'citations',
-    'content_references',
-    'aggregate_result',
-    'command',
-    'is_visually_hidden_from_conversation',
-    'attachments',
-    'finish_details',
-    'is_complete',
-  ]);
-
-  function extractPreservedMetadataJson(metadata: Record<string, unknown> | null): string | null {
-    if (!metadata) {
-      return null;
-    }
-
-    const preserved: Record<string, unknown> = {};
-    for (const key of Object.keys(metadata)) {
-      if (PRESERVED_METADATA_KEYS.has(key)) {
-        preserved[key] = (metadata as Record<string, unknown>)[key];
-      }
-    }
-
-    if (!Object.keys(preserved).length) {
-      return null;
-    }
-
-    try {
-      return JSON.stringify(preserved);
-    } catch {
-      return null;
-    }
-  }
-
   function safeStringifyJson(value: unknown): string | null {
     try {
       return JSON.stringify(value);
@@ -600,6 +553,8 @@
     updatedAt: string | null;
     capturedAt: string;
     isPartial?: boolean;
+    currentNode?: string | null;
+    snapshotJson?: string | null;
   }): void {
     window.postMessage(
       {
@@ -2073,6 +2028,8 @@
     searchText: string;
     updatedAt: string | null;
     capturedAt: string;
+    currentNode: string | null;
+    snapshotJson: string | null;
   } | null {
     if (!projectId || !isRecord(snapshot) || !isRecord(snapshot.mapping)) {
       return null;
@@ -2100,8 +2057,6 @@
       children: string[] | null;
       reasoningSteps: ChatHistoryReasoningStep[];
       reasoningMeta: { finishedDurationSec: number | null; startedAt: string | null; endedAt: string | null };
-      metadataJson: string | null;
-      rawJson: string | null;
     };
 
     const mapping = snapshot.mapping as Record<string, unknown>;
@@ -2174,8 +2129,6 @@
         children,
         reasoningSteps,
         reasoningMeta,
-        metadataJson: extractPreservedMetadataJson(metadata),
-        rawJson: safeStringifyJson(rawEntry),
       });
     }
 
@@ -2320,8 +2273,6 @@
                   stepsLoaded: true,
                 }
               : null,
-        metadataJson: entry.metadataJson,
-        rawJson: entry.rawJson,
       });
     }
 
@@ -2342,6 +2293,8 @@
       searchText: buildHistorySearchText(messages),
       updatedAt: normalizeChatTimestampToIso(snapshot.update_time),
       capturedAt: new Date().toISOString(),
+      currentNode: normalizeOptionalText(snapshot.current_node),
+      snapshotJson: safeStringifyJson(snapshot),
     };
   }
 
@@ -2580,6 +2533,8 @@
     updatedAt: string | null;
     capturedAt: string;
     isPartial: true;
+    currentNode: string | null;
+    snapshotJson: string | null;
   } | null {
     if (!context.conversationId) {
       return null;
@@ -2619,8 +2574,6 @@
       endTurn: null,
       status: null,
       reasoning: null,
-      metadataJson: null,
-      rawJson: null,
     }));
 
     registerSandboxFilesFromFinalAssistantMessages({
@@ -2641,6 +2594,8 @@
       updatedAt: messages[messages.length - 1]?.updatedAt ?? messages[messages.length - 1]?.createdAt ?? null,
       capturedAt: new Date().toISOString(),
       isPartial: true,
+      currentNode: null,
+      snapshotJson: null,
     };
   }
 

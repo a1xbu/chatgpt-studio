@@ -77,6 +77,9 @@ export interface ProjectChatHistoryUpsertInput {
   searchText: string;
   updatedAt: string | null;
   capturedAt: string;
+  isPartial?: boolean;
+  currentNode?: string | null;
+  snapshotJson?: string | null;
 }
 
 export interface ProjectBundleUpsertInput {
@@ -94,32 +97,6 @@ let sqlPromise: Promise<SqlJsStatic> | null = null;
 
 function cleanupText(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
-}
-
-function normalizeMessageText(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : '';
-}
-
-function normalizeReasoningStep(value: unknown): ChatHistoryReasoningStep | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  const content = normalizeMessageText(candidate.content);
-  const chunks = Array.isArray(candidate.chunks)
-    ? candidate.chunks.map((entry) => normalizeMessageText(entry)).filter((entry): entry is string => Boolean(entry))
-    : [];
-
-  if (!content && !chunks.length) {
-    return null;
-  }
-
-  return {
-    summary: normalizeNullableText(candidate.summary),
-    content: content || chunks.join('\n\n'),
-    chunks,
-  };
 }
 
 function normalizeNullableText(value: unknown): string | null {
@@ -151,83 +128,6 @@ function resolveFileSize(downloadPath: string | null): number | null {
 
 function isMessageRole(value: unknown): value is ChatHistoryMessageRecord['role'] {
   return value === 'assistant' || value === 'system' || value === 'tool' || value === 'user' || value === 'unknown';
-}
-
-function normalizeHistoryMessageRecord(value: unknown): ChatHistoryMessageRecord | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  const text = typeof candidate.text === 'string' ? candidate.text : '';
-
-  const reasoningCandidate =
-    candidate.reasoning && typeof candidate.reasoning === 'object' && !Array.isArray(candidate.reasoning)
-      ? (candidate.reasoning as Record<string, unknown>)
-      : null;
-
-  const reasoning: ChatHistoryReasoningSummary | null = reasoningCandidate
-    ? {
-        recap: normalizeMessageText(reasoningCandidate.recap) || text,
-        finishedDurationSec:
-          typeof reasoningCandidate.finishedDurationSec === 'number'
-            ? reasoningCandidate.finishedDurationSec
-            : null,
-        startedAt: ensureIsoTimestamp(reasoningCandidate.startedAt),
-        endedAt: ensureIsoTimestamp(reasoningCandidate.endedAt),
-        steps: Array.isArray(reasoningCandidate.steps)
-          ? (reasoningCandidate.steps as unknown[])
-              .map((entry) => normalizeReasoningStep(entry))
-              .filter((entry): entry is ChatHistoryReasoningStep => Boolean(entry))
-          : [],
-        stepsLoaded: reasoningCandidate.stepsLoaded === true,
-      }
-    : null;
-
-  const partsCandidate = Array.isArray(candidate.parts) ? candidate.parts : null;
-  const parts: ChatHistoryMultimodalPart[] | null = partsCandidate
-    ? partsCandidate
-        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
-        .map((entry) => ({
-          kind:
-            entry.kind === 'image' || entry.kind === 'attachment' || entry.kind === 'text'
-              ? entry.kind
-              : 'unknown',
-          text: typeof entry.text === 'string' ? entry.text : null,
-          assetPointer: typeof entry.assetPointer === 'string' ? entry.assetPointer : null,
-          mimeType: typeof entry.mimeType === 'string' ? entry.mimeType : null,
-          width: typeof entry.width === 'number' ? entry.width : null,
-          height: typeof entry.height === 'number' ? entry.height : null,
-        }))
-    : null;
-
-  return {
-    messageId: normalizeNullableText(candidate.messageId ?? candidate.id),
-    nodeId: normalizeNullableText(candidate.nodeId),
-    parentMessageId: normalizeNullableText(candidate.parentMessageId),
-    turnId: normalizeNullableText(candidate.turnId),
-    role: isMessageRole(candidate.role) ? candidate.role : 'unknown',
-    authorName: normalizeNullableText(candidate.authorName),
-    modelSlug: normalizeNullableText(candidate.modelSlug),
-    text,
-    createdAt: ensureIsoTimestamp(candidate.createdAt),
-    updatedAt: ensureIsoTimestamp(candidate.updatedAt),
-    contentType: normalizeNullableText(candidate.contentType),
-    messageType: normalizeNullableText(candidate.messageType),
-    language: normalizeNullableText(candidate.language),
-    parts,
-    children: Array.isArray(candidate.children)
-      ? candidate.children
-          .map((entry) => (typeof entry === 'string' ? cleanupText(entry) : ''))
-          .filter((entry): entry is string => Boolean(entry))
-      : null,
-    isHidden: candidate.isHidden === true,
-    endTurn: typeof candidate.endTurn === 'boolean' ? candidate.endTurn : null,
-    status: normalizeNullableText(candidate.status),
-    reasoning,
-    metadataJson: typeof candidate.metadataJson === 'string' ? candidate.metadataJson : null,
-    rawJson: typeof candidate.rawJson === 'string' ? candidate.rawJson : null,
-  };
 }
 
 async function getSql(): Promise<SqlJsStatic> {
@@ -271,7 +171,8 @@ function initializeSchema(db: Database): void {
       chat_name TEXT,
       message_count INTEGER NOT NULL,
       search_text TEXT,
-      history_json TEXT NOT NULL,
+      current_node TEXT,
+      snapshot_json TEXT,
       updated_at TEXT,
       captured_at TEXT NOT NULL
     );
@@ -303,8 +204,6 @@ function initializeSchema(db: Database): void {
       reasoning_duration_sec REAL,
       reasoning_started_at TEXT,
       reasoning_ended_at TEXT,
-      metadata_json TEXT,
-      raw_json TEXT,
       PRIMARY KEY (chat_id, message_id)
     );
 
@@ -393,7 +292,8 @@ function initializeSchema(db: Database): void {
   ensureColumn(db, 'chat_history', 'chat_name', 'TEXT');
   ensureColumn(db, 'chat_history', 'message_count', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'chat_history', 'search_text', 'TEXT');
-  ensureColumn(db, 'chat_history', 'history_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'chat_history', 'current_node', 'TEXT');
+  ensureColumn(db, 'chat_history', 'snapshot_json', 'TEXT');
   ensureColumn(db, 'chat_history', 'updated_at', 'TEXT');
   ensureColumn(db, 'chat_history', 'captured_at', "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
   ensureColumn(db, 'chat_files', 'project_name', 'TEXT');
@@ -417,8 +317,6 @@ function initializeSchema(db: Database): void {
   ensureColumn(db, 'project_bundle', 'file_count', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'chat_messages', 'parts_json', 'TEXT');
   ensureColumn(db, 'chat_messages', 'children_json', 'TEXT');
-  ensureColumn(db, 'chat_messages', 'metadata_json', 'TEXT');
-  ensureColumn(db, 'chat_messages', 'raw_json', 'TEXT');
   ensureColumn(db, 'chat_messages', 'author_name', 'TEXT');
   ensureColumn(db, 'chat_messages', 'model_slug', 'TEXT');
   ensureColumn(db, 'chat_messages', 'node_id', 'TEXT');
@@ -437,7 +335,6 @@ function initializeSchema(db: Database): void {
 
 function ensureColumn(db: Database, tableName: string, columnName: string, columnDefinition: string): void {
   const statement = db.prepare(`PRAGMA table_info(${tableName});`);
-
   try {
     while (statement.step()) {
       const row = statement.getAsObject();
@@ -448,7 +345,6 @@ function ensureColumn(db: Database, tableName: string, columnName: string, colum
   } finally {
     statement.free();
   }
-
   db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition};`);
 }
 
@@ -1163,23 +1059,43 @@ function serializeStringListJson(values: readonly string[] | null | undefined): 
   }
 }
 
-function serializeHistoryMessagesJson(messages: readonly ChatHistoryMessageRecord[]): string {
+function readMaxPosition(db: Database, chatId: string): number {
+  const statement = db.prepare('SELECT COALESCE(MAX(position), -1) AS max_pos FROM chat_messages WHERE chat_id = ?;');
   try {
-    return JSON.stringify(messages);
-  } catch {
-    return '[]';
+    (statement as typeof statement & { bind?: (values: unknown[]) => void }).bind?.([chatId]);
+    if (!statement.step()) {
+      return -1;
+    }
+    const row = statement.getAsObject() as Record<string, unknown>;
+    const value = Number(row.max_pos);
+    return Number.isFinite(value) ? value : -1;
+  } finally {
+    statement.free();
   }
 }
 
-function serializeMetadataJson(metadataJson: string | null | undefined): string | null {
-  const value = typeof metadataJson === 'string' ? metadataJson.trim() : '';
-  return value || null;
+function readExistingMessagePosition(db: Database, chatId: string, messageId: string): number | null {
+  const statement = db.prepare('SELECT position FROM chat_messages WHERE chat_id = ? AND message_id = ?;');
+  try {
+    (statement as typeof statement & { bind?: (values: unknown[]) => void }).bind?.([chatId, messageId]);
+    if (!statement.step()) {
+      return null;
+    }
+    const row = statement.getAsObject() as Record<string, unknown>;
+    const value = Number(row.position);
+    return Number.isFinite(value) ? value : null;
+  } finally {
+    statement.free();
+  }
 }
 
 export async function upsertChatHistory(folderPath: string, history: ProjectChatHistoryUpsertInput): Promise<void> {
   await withWritableDatabase(folderPath, (db) => {
+    const isPartial = history.isPartial === true;
     db.run('BEGIN');
     try {
+      // chat_history meta. For partial updates, preserve previously stored snapshot_json
+      // and current_node so streaming never wipes the canonical snapshot.
       const historyStatement = db.prepare(`
         INSERT INTO chat_history (
           chat_id,
@@ -1188,19 +1104,24 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
           chat_name,
           message_count,
           search_text,
-          history_json,
+          current_node,
+          snapshot_json,
           updated_at,
           captured_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(chat_id) DO UPDATE SET
           project_id = excluded.project_id,
-          project_name = excluded.project_name,
-          chat_name = excluded.chat_name,
-          message_count = excluded.message_count,
-          search_text = excluded.search_text,
-          history_json = excluded.history_json,
-          updated_at = excluded.updated_at,
+          project_name = COALESCE(excluded.project_name, chat_history.project_name),
+          chat_name = COALESCE(excluded.chat_name, chat_history.chat_name),
+          message_count = MAX(excluded.message_count, chat_history.message_count),
+          search_text = COALESCE(NULLIF(excluded.search_text, ''), chat_history.search_text),
+          current_node = COALESCE(excluded.current_node, chat_history.current_node),
+          snapshot_json = CASE
+            WHEN excluded.snapshot_json IS NOT NULL AND excluded.snapshot_json != '' THEN excluded.snapshot_json
+            ELSE chat_history.snapshot_json
+          END,
+          updated_at = COALESCE(excluded.updated_at, chat_history.updated_at),
           captured_at = excluded.captured_at;
       `);
 
@@ -1211,19 +1132,22 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
         history.chatName,
         history.messageCount,
         history.searchText,
-        serializeHistoryMessagesJson(history.messages),
+        history.currentNode ?? null,
+        isPartial ? null : history.snapshotJson ?? null,
         history.updatedAt,
         history.capturedAt,
       ]);
       historyStatement.free();
 
-      const deleteMessages = db.prepare('DELETE FROM chat_messages WHERE chat_id = ?;');
-      deleteMessages.run([history.chatId]);
-      deleteMessages.free();
+      if (!isPartial) {
+        const deleteMessages = db.prepare('DELETE FROM chat_messages WHERE chat_id = ?;');
+        deleteMessages.run([history.chatId]);
+        deleteMessages.free();
 
-      const deleteThoughts = db.prepare('DELETE FROM chat_message_thoughts WHERE chat_id = ?;');
-      deleteThoughts.run([history.chatId]);
-      deleteThoughts.free();
+        const deleteThoughts = db.prepare('DELETE FROM chat_message_thoughts WHERE chat_id = ?;');
+        deleteThoughts.run([history.chatId]);
+        deleteThoughts.free();
+      }
 
       const insertMessage = db.prepare(`
         INSERT INTO chat_messages (
@@ -1250,12 +1174,37 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
           reasoning_recap,
           reasoning_duration_sec,
           reasoning_started_at,
-          reasoning_ended_at,
-          metadata_json,
-          raw_json
+          reasoning_ended_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(chat_id, message_id) DO UPDATE SET
+          position = excluded.position,
+          parent_message_id = COALESCE(excluded.parent_message_id, chat_messages.parent_message_id),
+          turn_id = COALESCE(excluded.turn_id, chat_messages.turn_id),
+          role = CASE WHEN excluded.role = 'unknown' THEN chat_messages.role ELSE excluded.role END,
+          author_name = COALESCE(excluded.author_name, chat_messages.author_name),
+          model_slug = COALESCE(excluded.model_slug, chat_messages.model_slug),
+          node_id = COALESCE(excluded.node_id, chat_messages.node_id),
+          content_type = COALESCE(excluded.content_type, chat_messages.content_type),
+          message_type = COALESCE(excluded.message_type, chat_messages.message_type),
+          language = COALESCE(excluded.language, chat_messages.language),
+          text = CASE WHEN length(excluded.text) >= length(chat_messages.text) THEN excluded.text ELSE chat_messages.text END,
+          parts_json = COALESCE(excluded.parts_json, chat_messages.parts_json),
+          children_json = COALESCE(excluded.children_json, chat_messages.children_json),
+          is_hidden = excluded.is_hidden,
+          end_turn = COALESCE(excluded.end_turn, chat_messages.end_turn),
+          status = COALESCE(excluded.status, chat_messages.status),
+          created_at = COALESCE(excluded.created_at, chat_messages.created_at),
+          updated_at = COALESCE(excluded.updated_at, chat_messages.updated_at),
+          reasoning_recap = COALESCE(excluded.reasoning_recap, chat_messages.reasoning_recap),
+          reasoning_duration_sec = COALESCE(excluded.reasoning_duration_sec, chat_messages.reasoning_duration_sec),
+          reasoning_started_at = COALESCE(excluded.reasoning_started_at, chat_messages.reasoning_started_at),
+          reasoning_ended_at = COALESCE(excluded.reasoning_ended_at, chat_messages.reasoning_ended_at);
       `);
+
+      const deleteThoughtsForMessage = db.prepare(
+        'DELETE FROM chat_message_thoughts WHERE chat_id = ? AND message_id = ?;',
+      );
 
       const insertThought = db.prepare(`
         INSERT INTO chat_message_thoughts (
@@ -1270,14 +1219,29 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
       `);
 
       const seenMessageIds = new Set<string>();
-      let position = 0;
+      let nextPosition = isPartial ? readMaxPosition(db, history.chatId) + 1 : 0;
+      let appendedFromInput = 0;
       for (const message of history.messages) {
         const explicitMessageId = normalizeNullableText(message.messageId);
         let messageId = explicitMessageId;
         if (!messageId || seenMessageIds.has(messageId)) {
-          messageId = buildSyntheticMessageId(history.chatId, position);
+          messageId = buildSyntheticMessageId(history.chatId, nextPosition + appendedFromInput);
         }
         seenMessageIds.add(messageId);
+
+        let position: number;
+        if (isPartial) {
+          const existingPos = readExistingMessagePosition(db, history.chatId, messageId);
+          if (existingPos !== null) {
+            position = existingPos;
+          } else {
+            position = nextPosition + appendedFromInput;
+            appendedFromInput += 1;
+          }
+        } else {
+          position = nextPosition;
+          nextPosition += 1;
+        }
 
         insertMessage.run([
           history.chatId,
@@ -1306,11 +1270,10 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
             : null,
           message.reasoning ? ensureIsoTimestamp(message.reasoning.startedAt) : null,
           message.reasoning ? ensureIsoTimestamp(message.reasoning.endedAt) : null,
-          serializeMetadataJson(message.metadataJson),
-          serializeMetadataJson(message.rawJson),
         ]);
 
         if (message.reasoning?.steps?.length) {
+          deleteThoughtsForMessage.run([history.chatId, messageId]);
           let stepIndex = 0;
           for (const step of message.reasoning.steps) {
             const chunksJson = step.chunks?.length ? JSON.stringify(step.chunks) : null;
@@ -1325,12 +1288,11 @@ export async function upsertChatHistory(folderPath: string, history: ProjectChat
             stepIndex += 1;
           }
         }
-
-        position += 1;
       }
 
       insertMessage.free();
       insertThought.free();
+      deleteThoughtsForMessage.free();
 
       db.run('COMMIT');
     } catch (error) {
@@ -1465,9 +1427,7 @@ function listChatMessagesFromDatabase(
       reasoning_recap,
       reasoning_duration_sec,
       reasoning_started_at,
-      reasoning_ended_at,
-      metadata_json,
-      raw_json
+      reasoning_ended_at
     FROM chat_messages
     WHERE chat_id = ?
     ORDER BY position ASC;
@@ -1524,8 +1484,6 @@ function listChatMessagesFromDatabase(
         endTurn: row.end_turn == null || row.end_turn === '' ? null : Number(row.end_turn) === 1,
         status: normalizeNullableText(row.status),
         reasoning,
-        metadataJson: normalizeNullableText(row.metadata_json),
-        rawJson: normalizeNullableText(row.raw_json),
       });
     }
   } finally {
@@ -1662,7 +1620,8 @@ export async function getChatHistory(folderPath: string, chatId: string): Promis
           chat_name,
           message_count,
           search_text,
-          history_json,
+          current_node,
+          snapshot_json,
           updated_at,
           captured_at
         FROM chat_history
@@ -1688,23 +1647,7 @@ export async function getChatHistory(folderPath: string, chatId: string): Promis
           return null;
         }
 
-        const rawMessages = (() => {
-          try {
-            return JSON.parse(typeof row.history_json === 'string' ? row.history_json : '[]') as unknown;
-          } catch {
-            return [];
-          }
-        })();
-        let messages = Array.isArray(rawMessages)
-          ? rawMessages
-              .map((entry) => normalizeHistoryMessageRecord(entry))
-              .filter((entry): entry is ChatHistoryMessageRecord => Boolean(entry))
-          : [];
-
-        if (!messages.length) {
-          messages = listChatMessagesFromDatabase(db, normalizedChatId);
-        }
-
+        const messages = listChatMessagesFromDatabase(db, normalizedChatId, { includeThoughts: true });
         const files = listChatFilesFromDatabase(db, normalizedChatId);
 
         return {
@@ -1718,6 +1661,8 @@ export async function getChatHistory(folderPath: string, chatId: string): Promis
           searchText: cleanupText(row.search_text),
           updatedAt: ensureIsoTimestamp(row.updated_at),
           capturedAt,
+          currentNode: normalizeNullableText(row.current_node),
+          snapshotJson: typeof row.snapshot_json === 'string' && row.snapshot_json.length > 0 ? row.snapshot_json : null,
         };
       } finally {
         statement.free();

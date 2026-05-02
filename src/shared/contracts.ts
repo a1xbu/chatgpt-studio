@@ -184,8 +184,6 @@ export interface ChatHistoryMessageRecord {
   endTurn?: boolean | null;
   status?: string | null;
   reasoning?: ChatHistoryReasoningSummary | null;
-  metadataJson?: string | null;
-  rawJson?: string | null;
 }
 
 
@@ -281,6 +279,8 @@ export interface ChatHistoryRecord {
   updatedAt: string | null;
   capturedAt: string;
   isPartial?: boolean;
+  currentNode?: string | null;
+  snapshotJson?: string | null;
 }
 
 export interface SidebarProject {
