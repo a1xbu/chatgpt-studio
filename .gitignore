@@ -4,3 +4,4 @@ dist/
 .idea/
 .chatgpt-remote/
 dist-main-test/
+.chatgpt-capture/

@@ -7,7 +7,9 @@ const PAGE_APP_REQUEST_MESSAGE_SOURCE = 'chatgpt-desktop-poc:app-request';
 const PAGE_APP_RESPONSE_MESSAGE_SOURCE = 'chatgpt-desktop-poc:app-response';
 const PAGE_APP_COMMAND_MESSAGE_SOURCE = 'chatgpt-desktop-poc:app-command';
 const PAGE_FILE_STATUS_MESSAGE_SOURCE = 'chatgpt-desktop-poc:file-status';
+const PAGE_DEBUG_CAPTURE_MESSAGE_SOURCE = 'chatgpt-desktop-poc:debug-capture';
 const INJECTED_SOURCE_PLACEHOLDER = '__CHATGPT_DESKTOP_POC_INJECTED_SOURCE__';
+const DEBUG_CAPTURE_SOURCE_PLACEHOLDER = '__CHATGPT_DESKTOP_POC_DEBUG_CAPTURE_SOURCE__';
 
 let installStarted = false;
 
@@ -35,6 +37,18 @@ function getInjectedSource(): string {
   return INJECTED_SOURCE_PLACEHOLDER;
 }
 
+function getDebugCaptureSource(): string {
+  return DEBUG_CAPTURE_SOURCE_PLACEHOLDER;
+}
+
+async function isDebugCaptureEnabled(): Promise<boolean> {
+  try {
+    return Boolean(await ipcRenderer.invoke('chatcap-debug:enabled'));
+  } catch {
+    return false;
+  }
+}
+
 async function installInjectedScript(): Promise<void> {
   if (installStarted) {
     return;
@@ -58,6 +72,25 @@ async function installInjectedScript(): Promise<void> {
   } catch (error) {
     const details = error instanceof Error ? error.stack ?? error.message : String(error);
     postDebug('error', 'Failed to execute injected script through webFrame.executeJavaScript().', details);
+  }
+
+  const debugEnabled = await isDebugCaptureEnabled();
+  if (!debugEnabled) {
+    return;
+  }
+
+  const debugSource = getDebugCaptureSource();
+  if (!debugSource || debugSource === DEBUG_CAPTURE_SOURCE_PLACEHOLDER) {
+    postDebug('warn', 'Debug capture requested but the script source was not bundled.');
+    return;
+  }
+
+  try {
+    await webFrame.executeJavaScript(debugSource, true);
+    postDebug('info', 'Debug capture script executed (--debug mode).');
+  } catch (error) {
+    const details = error instanceof Error ? error.stack ?? error.message : String(error);
+    postDebug('error', 'Failed to execute debug capture script.', details);
   }
 }
 
@@ -150,5 +183,10 @@ window.addEventListener('message', (event) => {
 
   if (candidate.source === PAGE_DEBUG_MESSAGE_SOURCE) {
     ipcRenderer.send('chatgpt-page:debug', candidate.payload);
+    return;
+  }
+
+  if (candidate.source === PAGE_DEBUG_CAPTURE_MESSAGE_SOURCE) {
+    ipcRenderer.send('chatcap-debug:dump', candidate.payload);
   }
 });

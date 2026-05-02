@@ -18,19 +18,30 @@ execFileSync(tscCommand[0], tscCommand[1], {
 });
 
 const injectedScriptOutputPath = path.join(distDir, 'browser', 'injected-script.js');
+const debugCaptureOutputPath = path.join(distDir, 'browser', 'debug-capture-script.js');
 const guestPreloadOutputPath = path.join(distDir, 'browser', 'guest-preload.js');
 const injectedSource = readFileSync(injectedScriptOutputPath, 'utf8');
+const debugCaptureSource = readFileSync(debugCaptureOutputPath, 'utf8');
 const guestPreloadSource = readFileSync(guestPreloadOutputPath, 'utf8');
-const injectedSourceLiteral = JSON.stringify(injectedSource);
-const placeholder = 'return INJECTED_SOURCE_PLACEHOLDER;';
 
-if (!guestPreloadSource.includes(placeholder)) {
+const injectedSourceLiteral = JSON.stringify(injectedSource);
+const debugCaptureSourceLiteral = JSON.stringify(debugCaptureSource);
+const injectedPlaceholder = 'return INJECTED_SOURCE_PLACEHOLDER;';
+const debugCapturePlaceholder = 'return DEBUG_CAPTURE_SOURCE_PLACEHOLDER;';
+
+if (!guestPreloadSource.includes(injectedPlaceholder)) {
   throw new Error('guest-preload.js does not contain the injected-source placeholder.');
+}
+
+if (!guestPreloadSource.includes(debugCapturePlaceholder)) {
+  throw new Error('guest-preload.js does not contain the debug-capture-source placeholder.');
 }
 
 writeFileSync(
   guestPreloadOutputPath,
-  guestPreloadSource.replace(placeholder, () => `return ${injectedSourceLiteral};`),
+  guestPreloadSource
+    .replace(injectedPlaceholder, () => `return ${injectedSourceLiteral};`)
+    .replace(debugCapturePlaceholder, () => `return ${debugCaptureSourceLiteral};`),
   'utf8',
 );
 

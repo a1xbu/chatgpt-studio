@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectRegistry } from './project-registry';
@@ -16,6 +16,26 @@ let promptStore: PromptStore | null = null;
 const debugLogs: DebugLogEntry[] = [];
 const MAX_DEBUG_LOGS = 1000;
 let debugSequence = 0;
+
+const debugCaptureEnabled = (() => {
+  const args = process.argv.slice(1);
+  if (args.includes('--debug') || args.includes('--debug-capture')) {
+    return true;
+  }
+  return process.env.CHATCAP_DEBUG === '1' || process.env.CHATCAP_DEBUG === 'true';
+})();
+
+function resolveDebugCaptureDir(): string {
+  const dir = path.join(app.getAppPath(), '.chatgpt-capture');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function sanitizeDebugCaptureTag(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const cleaned = raw.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '');
+  return cleaned || 'snapshot';
+}
 
 const RECENT_FILE_ACTIVITY_WINDOW_MS = 10 * 60 * 1000;
 const gitService = new GitService();
@@ -751,12 +771,67 @@ function registerIpc(): void {
 
     appendDebugLog(entry);
   });
+
+  ipcMain.handle('chatcap-debug:enabled', () => debugCaptureEnabled);
+
+  ipcMain.on('chatcap-debug:dump', (_event, payload: unknown) => {
+    if (!debugCaptureEnabled) {
+      return;
+    }
+
+    const candidate = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
+    if (!candidate) {
+      return;
+    }
+
+    const tag = sanitizeDebugCaptureTag(candidate.tag);
+    const targetDir = resolveDebugCaptureDir();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `${timestamp}__${tag}.json`;
+    const filePath = path.join(targetDir, fileName);
+
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(candidate, null, 2);
+    } catch (error) {
+      console.error('[chatcap-debug] failed to stringify dump:', error);
+      return;
+    }
+
+    void writeFile(filePath, serialized, 'utf8')
+      .then(() => {
+        console.log(`[chatcap-debug] saved ${filePath} (${String(serialized.length)} bytes)`);
+        appendDebugLog({
+          id: `chatcap-${Date.now()}-${++debugSequence}`,
+          level: 'info',
+          message: `chatcap dump saved: ${fileName}`,
+          details: `path=${filePath} size=${String(serialized.length)} bytes`,
+          source: 'injected-script',
+          timestamp: new Date().toISOString(),
+        });
+      })
+      .catch((error: unknown) => {
+        console.error('[chatcap-debug] write failed:', error);
+        appendDebugLog({
+          id: `chatcap-${Date.now()}-${++debugSequence}`,
+          level: 'error',
+          message: 'chatcap dump failed to save',
+          details: error instanceof Error ? error.message : String(error),
+          source: 'injected-script',
+          timestamp: new Date().toISOString(),
+        });
+      });
+  });
 }
 
 async function bootstrap(): Promise<void> {
   projectRegistry = await ProjectRegistry.create(path.join(app.getPath('userData'), 'state.json'));
   promptStore = new PromptStore(resolvePromptsDirectoryPath());
   await promptStore.ensureDirectory();
+  if (debugCaptureEnabled) {
+    const dir = resolveDebugCaptureDir();
+    console.log(`[chatcap-debug] enabled — dumps will be written to ${dir}`);
+  }
   registerIpc();
   await createMainWindow();
   broadcastState();
