@@ -1141,8 +1141,10 @@
       return;
     }
 
-    for (let index = params.messages.length - 1; index >= 0; index -= 1) {
-      const candidate = params.messages[index];
+    // Scan every final-assistant text message in the snapshot — alternative
+    // branches and regenerated answers each carry their own sandbox links.
+    // Stopping at the first match would lose links from re-asks.
+    for (const candidate of params.messages) {
       if (!isAssistantFinalMessageCandidate(candidate) || !candidate.messageId) {
         continue;
       }
@@ -1155,7 +1157,6 @@
         text: candidate.text,
         detectedAt: candidate.updatedAt ?? candidate.createdAt ?? new Date().toISOString(),
       });
-      return;
     }
   }
 
