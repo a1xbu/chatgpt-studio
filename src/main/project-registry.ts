@@ -390,7 +390,15 @@ export class ProjectRegistry {
         }
       }
 
-      return mergedHistory;
+      // Re-read the persisted record so the IPC payload's revisionKey matches
+      // exactly what subsequent getChatHistory calls return. Without this the
+      // stream-emit's in-memory mergedHistory (e.g. messageCount=3 for a
+      // partial flush) diverges from what we read back from the DB
+      // (messageCount=121 because upsertChatHistory keeps MAX), producing a
+      // permanently-stale revisionKey and an infinite reload loop in the
+      // renderer's chat tab.
+      const canonicalHistory = await getPersistedChatHistory(binding.folderPath, mergedHistory.chatId);
+      return canonicalHistory ?? mergedHistory;
     }
 
     const nextTemporaryProject = this.ensureTemporaryProject(

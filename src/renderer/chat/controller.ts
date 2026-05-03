@@ -33,22 +33,17 @@ export function shouldLoadChatHistory(tab: ChatEditorTab, forceReload = false): 
 }
 
 function syncLoadedHistoryRevision(tab: ChatEditorTab, loadedHistory: ChatHistoryRecord): boolean {
+  const previousRevisionKey = tab.historyRevisionKey;
   const nextRevisionKey = getChatHistoryRevisionKey(loadedHistory);
-  const hasPendingDifferentRevision = Boolean(
-    tab.pendingHistoryRevisionKey
-    && tab.pendingHistoryRevisionKey !== nextRevisionKey,
-  );
 
   tab.historyRevisionKey = nextRevisionKey;
-  if (hasPendingDifferentRevision) {
-    tab.isHistoryStale = true;
-    tab.reloadAfterLoad = true;
-    return true;
-  }
-
+  // We always trust the just-loaded record as the canonical state. If the
+  // pending key did not match, that's noise from a divergent in-memory
+  // snapshot — drop it instead of triggering another reload, otherwise the
+  // tab spins forever when revisionKeys legitimately can't agree.
   tab.pendingHistoryRevisionKey = null;
   tab.isHistoryStale = false;
-  return false;
+  return previousRevisionKey !== nextRevisionKey;
 }
 
 export async function loadChatHistoryIntoTab(
