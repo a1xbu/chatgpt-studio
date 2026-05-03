@@ -30,9 +30,12 @@
   --file-tree-tone-ignored: #9b7a56;
   --file-tree-tone-ignored-hover: #c39a6d;
   --file-tree-tone-ignored-bg: rgba(130, 92, 48, 0.18);
-  --file-tree-tone-untracked: #ef6b73;
-  --file-tree-tone-untracked-hover: #ff9aa1;
-  --file-tree-tone-untracked-bg: rgba(239, 107, 115, 0.14);
+  --file-tree-tone-untracked-file: #ff8a91;
+  --file-tree-tone-untracked-file-hover: #ffc0c4;
+  --file-tree-tone-untracked-file-bg: rgba(255, 138, 145, 0.14);
+  --file-tree-tone-untracked-directory: #8f99a6;
+  --file-tree-tone-untracked-directory-hover: #b7c0cd;
+  --file-tree-tone-untracked-directory-bg: rgba(143, 153, 166, 0.12);
   color-scheme: dark;
   font-family: "Segoe UI", Tahoma, sans-serif;
 }
@@ -3407,13 +3410,22 @@ button:disabled:hover {
   background: var(--file-tree-tone-ignored-bg);
 }
 
-.file-tree__row--untracked {
-  color: var(--file-tree-tone-untracked);
+.file-tree__row--file.file-tree__row--untracked {
+  color: var(--file-tree-tone-untracked-file);
 }
 
-.file-tree__row--untracked:hover {
-  color: var(--file-tree-tone-untracked-hover);
-  background: var(--file-tree-tone-untracked-bg);
+.file-tree__row--file.file-tree__row--untracked:hover {
+  color: var(--file-tree-tone-untracked-file-hover);
+  background: var(--file-tree-tone-untracked-file-bg);
+}
+
+.file-tree__row--directory.file-tree__row--untracked {
+  color: var(--file-tree-tone-untracked-directory);
+}
+
+.file-tree__row--directory.file-tree__row--untracked:hover {
+  color: var(--file-tree-tone-untracked-directory-hover);
+  background: var(--file-tree-tone-untracked-directory-bg);
 }
 
 .git-file-tree .file-tree__row--git-added,

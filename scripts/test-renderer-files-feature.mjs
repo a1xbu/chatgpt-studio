@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -134,18 +135,32 @@ assert.equal(archiveEntriesByFileKey.size, 0);
 
 const untrackedMarkup = renderLocalFileTreeRows({
   projectId: 'project-1',
-  entries: [{
-    name: 'draft.txt',
-    relativePath: 'draft.txt',
-    fullPath: '/repo/project-1/draft.txt',
-    kind: 'file',
-    hasChildren: false,
-    modifiedAt: '2026-04-23T00:00:00.000Z',
-    createdAt: '2026-04-23T00:00:00.000Z',
-    containsRecentModifiedFiles: false,
-    isGitIgnored: false,
-    isGitUntracked: true,
-  }],
+  entries: [
+    {
+      name: 'draft.txt',
+      relativePath: 'draft.txt',
+      fullPath: '/repo/project-1/draft.txt',
+      kind: 'file',
+      hasChildren: false,
+      modifiedAt: '2026-04-23T00:00:00.000Z',
+      createdAt: '2026-04-23T00:00:00.000Z',
+      containsRecentModifiedFiles: false,
+      isGitIgnored: false,
+      isGitUntracked: true,
+    },
+    {
+      name: 'scratch',
+      relativePath: 'scratch',
+      fullPath: '/repo/project-1/scratch',
+      kind: 'directory',
+      hasChildren: false,
+      modifiedAt: '2026-04-23T00:00:00.000Z',
+      createdAt: '2026-04-23T00:00:00.000Z',
+      containsRecentModifiedFiles: false,
+      isGitIgnored: false,
+      isGitUntracked: true,
+    },
+  ],
   isExpanded() { return false; },
   getDepth() { return 0; },
   classifyActivity() { return 'new'; },
@@ -158,5 +173,11 @@ const untrackedMarkup = renderLocalFileTreeRows({
   },
 });
 assert.match(untrackedMarkup, /file-tree__row--untracked/);
+assert.match(untrackedMarkup, /file-tree__row--file file-tree__row--draggable[^\"]*file-tree__row--untracked/);
+assert.match(untrackedMarkup, /file-tree__row--directory[^\"]*file-tree__row--untracked/);
+
+const styles = fs.readFileSync(path.join(rootDir, 'src', 'renderer', 'styles.css'), 'utf8');
+assert.match(styles, /\.file-tree__row--file\.file-tree__row--untracked/);
+assert.match(styles, /\.file-tree__row--directory\.file-tree__row--untracked/);
 
 console.log('renderer-files-feature-test: ok');
