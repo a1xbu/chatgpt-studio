@@ -8,6 +8,7 @@ const rootDir = path.resolve(path.dirname(currentFile), '..');
 const require = createRequire(import.meta.url);
 
 const { createFilesFeature } = require(path.join(rootDir, 'dist', 'renderer', 'files', 'feature.js'));
+const { renderLocalFileTreeRows } = require(path.join(rootDir, 'dist', 'renderer', 'tree', 'local-file-tree.js'));
 const { getLocalFileTreeKey } = require(path.join(rootDir, 'dist', 'renderer', 'files', 'runtime.js'));
 
 const fileRecord = {
@@ -76,6 +77,8 @@ const feature = createFilesFeature({
       sizeBytes: 42,
       modifiedAt: '2026-04-23T00:00:00.000Z',
       containsRecentModifiedFiles: false,
+      isGitIgnored: false,
+      isGitUntracked: false,
     }];
   },
   getLocalFileTreeKey,
@@ -119,11 +122,41 @@ localFileEntriesByKey.set('project-1::', [{
   sizeBytes: 5,
   modifiedAt: '2026-04-23T00:00:00.000Z',
   containsRecentModifiedFiles: false,
+  isGitIgnored: false,
+  isGitUntracked: false,
 }]);
 archiveEntriesByFileKey.set(`${fileRecord.chatId}::${fileRecord.messageId}::${fileRecord.sandboxPath}`, [{ relativePath: 'bundle.txt' }]);
 await feature.actions.refreshLocalProjectTree('project-1');
 assert.deepEqual(listCalls, ['project-1:', 'project-1:']);
 assert.equal(localFileEntriesByKey.get('project-1::')?.[0].fileName, 'index.ts');
 assert.equal(archiveEntriesByFileKey.size, 0);
+
+
+const untrackedMarkup = renderLocalFileTreeRows({
+  projectId: 'project-1',
+  entries: [{
+    name: 'draft.txt',
+    relativePath: 'draft.txt',
+    fullPath: '/repo/project-1/draft.txt',
+    kind: 'file',
+    hasChildren: false,
+    modifiedAt: '2026-04-23T00:00:00.000Z',
+    createdAt: '2026-04-23T00:00:00.000Z',
+    containsRecentModifiedFiles: false,
+    isGitIgnored: false,
+    isGitUntracked: true,
+  }],
+  isExpanded() { return false; },
+  getDepth() { return 0; },
+  classifyActivity() { return 'new'; },
+  renderChildren() { return ''; },
+}, {
+  renderFolderTreeIcon() { return '<svg data-icon="folder"></svg>'; },
+  renderFileTreeFileIcon() { return '<svg data-icon="file"></svg>'; },
+  renderSharedFileTreeItem(model) {
+    return `<div class="${model.rowClassNames.join(' ')}">${model.name}</div>`;
+  },
+});
+assert.match(untrackedMarkup, /file-tree__row--untracked/);
 
 console.log('renderer-files-feature-test: ok');

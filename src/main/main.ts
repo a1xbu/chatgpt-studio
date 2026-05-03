@@ -160,6 +160,67 @@ function collectGitIgnoredEntries(
   return ignored;
 }
 
+function collectGitUntrackedEntries(
+  folderPath: string,
+  entries: Array<{ relativePath: string; kind: 'file' | 'directory'; isGitIgnored: boolean }>,
+): Set<string> {
+  if (!existsSync(path.join(folderPath, '.git'))) {
+    return new Set();
+  }
+
+  const candidates = entries
+    .filter((entry) => !entry.isGitIgnored)
+    .map((entry) => normalizeGitIgnoreCandidatePath(entry.relativePath))
+    .filter(Boolean);
+  if (!candidates.length) {
+    return new Set();
+  }
+
+  const result = spawnSync(
+    'git',
+    ['-C', folderPath, 'ls-files', '-z', '--', ...candidates],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+    },
+  );
+
+  if (result.status !== 0) {
+    return new Set();
+  }
+
+  const trackedPaths = new Set(
+    (result.stdout || '')
+      .split('\0')
+      .map((line) => normalizeGitIgnoreCandidatePath(line))
+      .filter(Boolean),
+  );
+  const trackedPathList = [...trackedPaths];
+  const untracked = new Set<string>();
+
+  for (const entry of entries) {
+    if (entry.isGitIgnored) {
+      continue;
+    }
+
+    const normalizedPath = normalizeGitIgnoreCandidatePath(entry.relativePath);
+    if (!normalizedPath) {
+      continue;
+    }
+
+    const hasTrackedEntry = entry.kind === 'directory'
+      ? trackedPathList.some(
+        (trackedPath) => trackedPath === normalizedPath || trackedPath.startsWith(`${normalizedPath}/`),
+      )
+      : trackedPaths.has(normalizedPath);
+    if (!hasTrackedEntry) {
+      untracked.add(normalizedPath);
+    }
+  }
+
+  return untracked;
+}
+
 function collectDirectoryRecentStatus(directoryPath: string): { containsRecentModifiedFiles: boolean } {
   const stack = [directoryPath];
 
@@ -203,6 +264,7 @@ function listVisibleProjectEntries(folderPath: string, relativePath: string): Ar
   createdAt: string | null;
   containsRecentModifiedFiles: boolean;
   isGitIgnored: boolean;
+  isGitUntracked: boolean;
 }> {
   const directoryPath = resolveProjectSubdirectory(folderPath, relativePath);
   if (!existsSync(directoryPath) || !statSync(directoryPath).isDirectory()) {
@@ -231,6 +293,7 @@ function listVisibleProjectEntries(folderPath: string, relativePath: string): Ar
         createdAt,
         containsRecentModifiedFiles,
         isGitIgnored: false,
+        isGitUntracked: false,
       };
     });
 
@@ -242,6 +305,11 @@ function listVisibleProjectEntries(folderPath: string, relativePath: string): Ar
 
   entries.forEach((entry) => {
     entry.isGitIgnored = ignoredEntries.has(normalizeGitIgnoreCandidatePath(entry.relativePath));
+  });
+
+  const untrackedEntries = collectGitUntrackedEntries(folderPath, entries);
+  entries.forEach((entry) => {
+    entry.isGitUntracked = untrackedEntries.has(normalizeGitIgnoreCandidatePath(entry.relativePath));
   });
 
   entries.sort((left, right) => {

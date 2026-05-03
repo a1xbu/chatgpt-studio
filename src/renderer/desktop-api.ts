@@ -80,6 +80,7 @@ export type LocalProjectFileEntry = {
   createdAt: string | null;
   containsRecentModifiedFiles: boolean;
   isGitIgnored: boolean;
+  isGitUntracked: boolean;
 };
 
 export type ConnectProjectResult = {

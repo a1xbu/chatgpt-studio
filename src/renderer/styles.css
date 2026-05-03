@@ -30,6 +30,9 @@
   --file-tree-tone-ignored: #9b7a56;
   --file-tree-tone-ignored-hover: #c39a6d;
   --file-tree-tone-ignored-bg: rgba(130, 92, 48, 0.18);
+  --file-tree-tone-untracked: #ef6b73;
+  --file-tree-tone-untracked-hover: #ff9aa1;
+  --file-tree-tone-untracked-bg: rgba(239, 107, 115, 0.14);
   color-scheme: dark;
   font-family: "Segoe UI", Tahoma, sans-serif;
 }
@@ -3402,6 +3405,15 @@ button:disabled:hover {
 .file-tree__row--ignored:hover {
   color: var(--file-tree-tone-ignored-hover);
   background: var(--file-tree-tone-ignored-bg);
+}
+
+.file-tree__row--untracked {
+  color: var(--file-tree-tone-untracked);
+}
+
+.file-tree__row--untracked:hover {
+  color: var(--file-tree-tone-untracked-hover);
+  background: var(--file-tree-tone-untracked-bg);
 }
 
 .git-file-tree .file-tree__row--git-added,

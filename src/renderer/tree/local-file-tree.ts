@@ -10,6 +10,7 @@ export type LocalProjectFileTreeEntry = {
   createdAt: string | null;
   containsRecentModifiedFiles: boolean;
   isGitIgnored: boolean;
+  isGitUntracked: boolean;
 };
 
 export type LocalFileTreeActivity = 'unchanged' | 'new' | 'modified';
@@ -63,6 +64,7 @@ export function renderLocalFileTreeRows(
         activity === 'modified' ? 'file-tree__row--recent' : '',
         isDirectory && entry.containsRecentModifiedFiles ? 'file-tree__row--recent-directory' : '',
         entry.isGitIgnored ? 'file-tree__row--ignored' : '',
+        entry.isGitUntracked ? 'file-tree__row--untracked' : '',
       ],
       rowAttributes: {
         'data-project-id': options.projectId,
