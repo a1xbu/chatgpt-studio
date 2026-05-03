@@ -468,6 +468,7 @@ function buildGitGraphLayouts(
     const afterLanes = nextLanes.map((lane) => ({ ...lane }));
     const topConnectionMaxLaneIndex = topChildConnections.reduce((maxIndex, connection) => Math.max(maxIndex, connection.laneIndex), -1);
     maxLaneCount = Math.max(maxLaneCount, beforeLanes.length, afterLanes.length, laneIndex + 1, topConnectionMaxLaneIndex + 1);
+    const nodeIsBranchHead = (context.branchNamesByCommitHash.get(commit.hash)?.length ?? 0) > 0;
     layouts.set(commit.hash, {
       nodeLane: laneIndex,
       nodeLaneSourceIndex,
@@ -482,7 +483,7 @@ function buildGitGraphLayouts(
       nodeColor: currentLane.color,
       nodeIsActive: currentLane.isActive,
       nodeIsFocused: currentLane.isFocused,
-      nodeIsTerminalHead: nodeLaneSeeded && nodeLaneSourceIndex === null,
+      nodeIsTerminalHead: nodeIsBranchHead || (nodeLaneSeeded && nodeLaneSourceIndex === null),
     });
     lanes = afterLanes;
     previousAfterLanes = afterLanes.map((lane) => ({ ...lane }));

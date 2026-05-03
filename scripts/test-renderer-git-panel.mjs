@@ -136,8 +136,11 @@ assert.match(markup, /--git-branch-color:#f2c94c/);
 assert.match(markup, /git-commit-row__graph-node--terminal/);
 assert.match(markup, /Fix file tree coloring regressions/);
 assert.match(markup, /origin\/main/);
+assert.match(mainCommitRow, /git-commit-row__graph-node--terminal/);
+assert.match(mainCommitRow, /<circle[^>]*r="5"/);
 assert.match(mainCommitRow, /<circle[^>]*cx="18"[^>]*fill="#57d38c"/);
-assert.match(mainCommitRow, /x1="18" y1="0" x2="18" y2="12"[^>]*stroke="#57d38c"/);
+assert.doesNotMatch(mainCommitRow, /x1="18" y1="0" x2="18" y2="12"[^>]*stroke="#57d38c"/);
+assert.match(mainCommitRow, /x1="18" y1="12" x2="18" y2="24"[^>]*stroke="#57d38c"/);
 assert.match(branchBaseRow, /<circle[^>]*fill="#57d38c"/);
 assert.match(branchBaseRow, /x1="18" y1="12" x2="8" y2="0"[^>]*stroke="#f2c94c"/);
 assert.match(branchBaseRow, /x1="8" y1="12" x2="8" y2="24"[^>]*stroke="#57d38c"/);
@@ -276,10 +279,13 @@ const multiBranchMarkup = renderGitPanelMarkup(
 );
 
 const multiBranchFeatureRow = getCommitRowMarkup(multiBranchMarkup, 'M2');
+const multiBranchSideHeadRow = getCommitRowMarkup(multiBranchMarkup, 'F1');
 const multiBranchBaseRow = getCommitRowMarkup(multiBranchMarkup, 'A1');
 const multiBranchOlderRow = getCommitRowMarkup(multiBranchMarkup, 'P0');
 assert.match(multiBranchFeatureRow, /x1="28" y1="0" x2="28" y2="12"[^>]*stroke="#ff7a59"/);
 assert.doesNotMatch(multiBranchFeatureRow, /x1="18" y1="0" x2="28" y2="12"[^>]*stroke="#ff7a59"/);
+assert.match(multiBranchSideHeadRow, /git-commit-row__graph-node--terminal/);
+assert.match(multiBranchSideHeadRow, /<circle[^>]*r="5"/);
 assert.match(multiBranchBaseRow, /<circle[^>]*fill="#57d38c"/);
 assert.match(multiBranchBaseRow, /x1="8" y1="12" x2="18" y2="0"[^>]*stroke="#f2c94c"/);
 assert.match(multiBranchBaseRow, /x1="8" y1="12" x2="28" y2="0"[^>]*stroke="#ff7a59"/);
