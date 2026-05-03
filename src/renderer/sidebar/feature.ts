@@ -212,6 +212,7 @@ function renderNewFilesPanel(
     renderCheckIcon: options.renderCheckIcon,
     renderChevronIcon: options.renderChevronIcon,
     renderDownloadArrowIcon: options.renderDownloadArrowIcon,
+    renderMoreActionsIcon: options.renderMoreActionsIcon,
     renderFileTreeFileIcon: options.renderFileTreeFileIcon,
     renderFolderTreeIcon: options.renderFolderTreeIcon,
     getChatFileKey: (file) => options.getChatFileKey(file as ChatFileRecord),

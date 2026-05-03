@@ -20,6 +20,7 @@ import {
   handleBrowserSandboxFileStatus as handleBrowserSandboxFileStatusImpl,
   queueAutomaticSandboxDownloads as queueAutomaticSandboxDownloadsImpl,
   sendBrowserFileCommand as sendBrowserFileCommandImpl,
+  type BrowserFileCommand,
 } from './downloads';
 import {
   resolvePreferredStartupBrowserSelection as resolvePreferredStartupBrowserSelectionImpl,
@@ -43,7 +44,7 @@ export type BrowserFeature = {
     openBrowserForPairedChat: (projectId: string, chatId: string, activateBrowser?: boolean) => boolean;
     syncBrowserOpenedSelection: (state: AppStateSnapshot) => void;
     openLocalChatInChatGpt: (projectId: string, chatId: string, chatUrl: string) => void;
-    sendBrowserFileCommand: (command: 'enqueue-file-download' | 'cancel-file-download', file: ChatFileRecord) => void;
+    sendBrowserFileCommand: (command: BrowserFileCommand, file: ChatFileRecord) => void;
     queueAutomaticSandboxDownloads: () => void;
     handleBrowserSandboxFileStatus: (payload: unknown) => void;
     handleWebviewDidStartLoading: () => void;
@@ -85,6 +86,8 @@ export type BrowserFeatureOptions = {
   browserController: Pick<BrowserController, 'openUrl' | 'refreshNavigationState'>;
   browserElement: WebviewElement | null;
   fileDownloadStatuses: Map<string, FileDownloadRuntimeStatus>;
+  setTimeout?: (callback: () => void, delayMs: number) => number;
+  random?: () => number;
   ensureChatHistoryTab: (project: SidebarProject, chat: ProjectChatRecord, activate?: boolean) => Promise<unknown>;
   openChatHistoryTab: (project: SidebarProject, chat: ProjectChatRecord) => Promise<unknown>;
   activateEditorTab: (tabId: string) => void;
@@ -237,7 +240,7 @@ export function createBrowserFeature(options: BrowserFeatureOptions): BrowserFea
     });
   }
 
-  function sendBrowserFileCommand(command: 'enqueue-file-download' | 'cancel-file-download', file: ChatFileRecord): void {
+  function sendBrowserFileCommand(command: BrowserFileCommand, file: ChatFileRecord): void {
     sendBrowserFileCommandImpl(command, file, {
       browserElement: options.browserElement,
       addDebugLog: options.addDebugLog,
@@ -254,6 +257,10 @@ export function createBrowserFeature(options: BrowserFeatureOptions): BrowserFea
       getLatestNewFiles: options.getLatestNewFiles,
       getChatFileKey: options.getChatFileKey,
       sendBrowserFileCommand,
+      isDownloadAutomaticallyEnabled: options.getDownloadAutomatically,
+      setTimeout: options.setTimeout,
+      random: options.random,
+      render: options.render,
     });
   }
 

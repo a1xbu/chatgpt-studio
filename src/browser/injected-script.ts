@@ -137,6 +137,7 @@
   const capturedBackendHeaders: Record<string, string> = {};
   let appBridgeSequence = 0;
   const sandboxDownloadQueue: string[] = [];
+  const sandboxDownloadOverwriteKeys = new Set<string>();
   const sandboxDownloadStatuses = new Map<string, {
     status: 'waiting' | 'resolving' | 'downloading' | 'saving' | 'downloaded' | 'cancelled' | 'error';
     progressPercent: number | null;
@@ -1262,12 +1263,15 @@
 
     const record = getQueuedSandboxFileRecord(nextFileKey);
     if (!record) {
+      sandboxDownloadOverwriteKeys.delete(nextFileKey);
       void processSandboxDownloadQueue();
       return;
     }
 
-    if (record.downloadPath) {
+    const overwriteExistingDownload = sandboxDownloadOverwriteKeys.has(nextFileKey);
+    if (record.downloadPath && !overwriteExistingDownload) {
       markSandboxDownloadStatus(record, 'downloaded', { progressPercent: 100, message: 'Already downloaded', downloadPath: record.downloadPath });
+      sandboxDownloadOverwriteKeys.delete(nextFileKey);
       void processSandboxDownloadQueue();
       return;
     }
@@ -1319,6 +1323,7 @@
         discoveredAt: record.discoveredAt,
         updatedAt: new Date().toISOString(),
         bytes,
+        overwriteExisting: overwriteExistingDownload,
       });
 
       if (isRecord(savedRecord)) {
@@ -1373,6 +1378,7 @@
         logDebug('error', 'Sandbox file download failed.', message);
       }
     } finally {
+      sandboxDownloadOverwriteKeys.delete(nextFileKey);
       currentSandboxDownloadKey = null;
       currentSandboxDownloadAbortController = null;
       updateWaitingSandboxStatuses();
@@ -1386,7 +1392,7 @@
     }
   }
 
-  function enqueueSandboxFileDownload(rawPayload: unknown): void {
+  function enqueueSandboxFileDownload(rawPayload: unknown, options: { overwriteExisting?: boolean } = {}): void {
     const source = isRecord(rawPayload) && isRecord(rawPayload.file) ? rawPayload.file : rawPayload;
     if (!isRecord(source)) {
       return;
@@ -1401,15 +1407,17 @@
     }
 
     const fileKey = getSandboxFileKey(chatId, messageId, sandboxPath);
-    if (!knownSandboxFilesByKey.has(fileKey)) {
+    const existingRecord = knownSandboxFilesByKey.get(fileKey) ?? null;
+    const sourceDownloadPath = typeof source.downloadPath === 'string' ? cleanupText(source.downloadPath) : null;
+    if (!existingRecord || (options.overwriteExisting && sourceDownloadPath && existingRecord.downloadPath !== sourceDownloadPath)) {
       rememberSandboxFileRecord({
         projectId,
-        projectName: typeof source.projectName === 'string' ? cleanupText(source.projectName) : null,
+        projectName: typeof source.projectName === 'string' ? cleanupText(source.projectName) : existingRecord?.projectName ?? null,
         chatId,
         messageId,
         sandboxPath,
-        downloadPath: typeof source.downloadPath === 'string' ? cleanupText(source.downloadPath) : null,
-        discoveredAt: typeof source.discoveredAt === 'string' ? cleanupText(source.discoveredAt) : new Date().toISOString(),
+        downloadPath: sourceDownloadPath ?? existingRecord?.downloadPath ?? null,
+        discoveredAt: typeof source.discoveredAt === 'string' ? cleanupText(source.discoveredAt) : existingRecord?.discoveredAt ?? new Date().toISOString(),
         updatedAt: typeof source.updatedAt === 'string' ? cleanupText(source.updatedAt) : new Date().toISOString(),
       });
     }
@@ -1419,7 +1427,7 @@
       return;
     }
 
-    if (record.downloadPath) {
+    if (record.downloadPath && !options.overwriteExisting) {
       markSandboxDownloadStatus(record, 'downloaded', { progressPercent: 100, message: 'Already downloaded', downloadPath: record.downloadPath });
       return;
     }
@@ -1428,6 +1436,11 @@
       return;
     }
 
+    if (options.overwriteExisting) {
+      sandboxDownloadOverwriteKeys.add(fileKey);
+    } else {
+      sandboxDownloadOverwriteKeys.delete(fileKey);
+    }
     sandboxDownloadQueue.push(fileKey);
     updateWaitingSandboxStatuses();
     if (!currentSandboxDownloadKey && nextSandboxDownloadTimer === null) {
@@ -1457,6 +1470,7 @@
     const queueIndex = sandboxDownloadQueue.indexOf(fileKey);
     if (queueIndex >= 0) {
       sandboxDownloadQueue.splice(queueIndex, 1);
+      sandboxDownloadOverwriteKeys.delete(fileKey);
       markSandboxDownloadStatus(record, 'cancelled', { message: 'Cancelled' });
       return;
     }
@@ -1474,6 +1488,11 @@
     const command = typeof payload.command === 'string' ? cleanupText(payload.command) : typeof payload.action === 'string' ? cleanupText(payload.action) : '';
     if (command === 'enqueue-file-download') {
       enqueueSandboxFileDownload(payload);
+      return;
+    }
+
+    if (command === 'enqueue-file-download-again') {
+      enqueueSandboxFileDownload(payload, { overwriteExisting: true });
       return;
     }
 

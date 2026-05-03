@@ -515,7 +515,10 @@ export class ProjectRegistry {
       throw new Error('Connect the current ChatGPT project before downloading sandbox files.');
     }
 
-    const savedPath = await this.writeSandboxFile(binding.folderPath, payload.sandboxPath, payload.bytes);
+    const savedPath = await this.writeSandboxFile(binding.folderPath, payload.sandboxPath, payload.bytes, {
+      overwriteExisting: payload.overwriteExisting,
+      overwritePath: payload.downloadPath,
+    });
     const storedFile: ChatFileRecord = {
       projectId: payload.projectId,
       projectName: binding.projectName,
@@ -1271,7 +1274,7 @@ export class ProjectRegistry {
     };
   }
 
-  private normalizeDownloadedChatFile(rawFile: unknown): (ChatFileRecord & { bytes: Uint8Array }) | null {
+  private normalizeDownloadedChatFile(rawFile: unknown): (ChatFileRecord & { bytes: Uint8Array; overwriteExisting: boolean }) | null {
     const base = this.normalizeChatFile(rawFile);
     const candidate = rawFile && typeof rawFile === 'object' ? (rawFile as Record<string, unknown>) : null;
     if (!base || !candidate) {
@@ -1287,6 +1290,7 @@ export class ProjectRegistry {
     return {
       ...base,
       bytes,
+      overwriteExisting: candidate.overwriteExisting === true,
       downloadUrl: normalizeNullableText(candidate.downloadUrl),
       downloadPath: normalizeNullableText(candidate.downloadPath),
       fileName: normalizeNullableText(candidate.fileName) ?? path.basename(base.sandboxPath),
@@ -1294,8 +1298,13 @@ export class ProjectRegistry {
     };
   }
 
-  private async writeSandboxFile(folderPath: string, sandboxPath: string, bytes: Uint8Array): Promise<string> {
-    const { access, mkdir, writeFile } = await import('node:fs/promises');
+  private async writeSandboxFile(
+    folderPath: string,
+    sandboxPath: string,
+    bytes: Uint8Array,
+    options: { overwriteExisting?: boolean; overwritePath?: string | null } = {},
+  ): Promise<string> {
+    const { access, mkdir, rename, rm, writeFile } = await import('node:fs/promises');
     const normalizedSandboxPath = sandboxPath.replace(/\\/g, '/');
     const relativeSandboxPath = normalizedSandboxPath
       .replace(/^sandbox:\/mnt\/data\//, '')
@@ -1303,10 +1312,33 @@ export class ProjectRegistry {
       .replace(/^\/+/, '');
     const safeRelativePath = relativeSandboxPath.split('/').filter(Boolean).join(path.sep) || path.basename(normalizedSandboxPath);
     const baseTargetPath = path.join(folderPath, '.chatgpt', 'files', safeRelativePath);
+    const filesRootPath = path.resolve(folderPath, '.chatgpt', 'files');
     const targetDirectory = path.dirname(baseTargetPath);
     const parsedTargetPath = path.parse(baseTargetPath);
 
     await mkdir(targetDirectory, { recursive: true });
+
+    const normalizedOverwritePath = normalizeNullableText(options.overwritePath);
+    if (options.overwriteExisting && normalizedOverwritePath) {
+      const overwritePath = path.resolve(normalizedOverwritePath);
+      const relativeOverwritePath = path.relative(filesRootPath, overwritePath);
+      const isInsideFilesRoot = relativeOverwritePath && !relativeOverwritePath.startsWith('..') && !path.isAbsolute(relativeOverwritePath);
+      if (isInsideFilesRoot) {
+        await mkdir(path.dirname(overwritePath), { recursive: true });
+        const tempPath = path.join(
+          path.dirname(overwritePath),
+          `.${path.basename(overwritePath)}.chatgpt-download-${String(Date.now())}-${Math.random().toString(16).slice(2)}.tmp`,
+        );
+        try {
+          await writeFile(tempPath, Buffer.from(bytes));
+          await rename(tempPath, overwritePath);
+        } catch (error) {
+          await rm(tempPath, { force: true }).catch(() => undefined);
+          throw error;
+        }
+        return overwritePath;
+      }
+    }
 
     let candidatePath = baseTargetPath;
     let suffix = 1;

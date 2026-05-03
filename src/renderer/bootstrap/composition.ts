@@ -266,7 +266,7 @@ export type RendererBindingsCompositionOptions = {
     getRemoteFileRootKey: (file: ChatFileRecord) => string;
     getRemoteFileArchiveBranchKey: (file: ChatFileRecord, relativePath: string) => string;
     loadArchiveEntriesForFile: (file: ChatFileRecord) => Promise<void>;
-    sendBrowserFileCommand: (command: 'enqueue-file-download' | 'cancel-file-download', file: ChatFileRecord) => void;
+    sendBrowserFileCommand: (command: 'enqueue-file-download' | 'enqueue-file-download-again' | 'cancel-file-download', file: ChatFileRecord) => void;
     shouldWarnBeforeApplyingArchive: (file: ChatFileRecord) => boolean;
     openArchiveApplyWarningDialog: (file: ChatFileRecord, relativePath?: string | null) => void;
     persistDownloadAutomatically: (checked: boolean) => void;
@@ -465,6 +465,7 @@ export function installComposedRendererBindings(options: RendererBindingsComposi
       },
       queueAutomaticSandboxDownloads: options.actions.queueAutomaticSandboxDownloads,
       getEffectiveDownloadPath: options.actions.getEffectiveDownloadPath,
+      showItemInFolder: (filePath) => options.desktopPoc.showItemInFolder(filePath),
       newIsoTimestamp: options.actions.newIsoTimestamp,
     },
   });

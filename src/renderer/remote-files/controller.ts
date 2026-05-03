@@ -16,7 +16,7 @@ export type RemoteFilesControllerOptions = {
   archiveEntriesByFileKey: Map<string, unknown[]>;
   loadArchiveEntriesForFile: (file: ChatFileRecord) => Promise<void> | void;
   fileDownloadStatuses: Map<string, FileDownloadRuntimeStatus>;
-  sendBrowserFileCommand: (command: 'enqueue-file-download' | 'cancel-file-download', file: ChatFileRecord) => void;
+  sendBrowserFileCommand: RemoteFilesEventsHelpers['sendBrowserFileCommand'];
   shouldWarnBeforeApplyingArchive: (file: ChatFileRecord) => boolean;
   openArchiveApplyWarningDialog: (file: ChatFileRecord, relativePath?: string | null) => void;
   runApplySandboxFile: (file: ChatFileRecord, relativePath?: string | null) => Promise<unknown>;
@@ -26,6 +26,7 @@ export type RemoteFilesControllerOptions = {
   persistDownloadAutomatically: (checked: boolean) => void;
   queueAutomaticSandboxDownloads: () => void;
   getEffectiveDownloadPath: (file: ChatFileRecord) => string | null;
+  showItemInFolder: (filePath: string) => Promise<unknown> | void;
   newIsoTimestamp: () => string;
 };
 
@@ -57,6 +58,8 @@ export function createRemoteFilesEventHelpers(options: RemoteFilesControllerOpti
       });
     },
     sendBrowserFileCommand: options.sendBrowserFileCommand,
+    getEffectiveDownloadPath: options.getEffectiveDownloadPath,
+    showItemInFolder: options.showItemInFolder,
     shouldWarnBeforeApplyingArchive: options.shouldWarnBeforeApplyingArchive,
     openArchiveApplyWarningDialog: options.openArchiveApplyWarningDialog,
     runApplySandboxFile: options.runApplySandboxFile,

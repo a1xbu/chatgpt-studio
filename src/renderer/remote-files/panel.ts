@@ -41,6 +41,7 @@ export type RemoteFilesPanelHelpers = {
   renderCheckIcon: () => string;
   renderChevronIcon: () => string;
   renderDownloadArrowIcon: () => string;
+  renderMoreActionsIcon: () => string;
   renderFileTreeFileIcon: () => string;
   renderFolderTreeIcon: (isOpen?: boolean) => string;
   getChatFileKey: (file: Pick<RemoteFilesChatFileRecord, 'chatId' | 'messageId' | 'sandboxPath'>) => string;
@@ -181,14 +182,19 @@ function renderRemoteFilesStatusAction(
     return `<button class="new-files-tree__status-button" type="button" disabled title="Connect project first" aria-label="Connect project first">${helpers.renderDownloadArrowIcon()}</button>`;
   }
 
-  if (effectiveDownloadPath) {
-    const label = file.appliedAt ? `Downloaded. Applied ${helpers.formatTimestamp(file.appliedAt)}` : 'Downloaded';
-    return `<button class="new-files-tree__status-button new-files-tree__status-button--downloaded" type="button" disabled title="${helpers.escapeHtml(label)}" aria-label="${helpers.escapeHtml(label)}">${helpers.renderCheckIcon()}</button>`;
-  }
-
   if (runtime?.status === 'waiting' || runtime?.status === 'resolving' || runtime?.status === 'downloading' || runtime?.status === 'saving') {
     const label = runtime.message ?? 'Downloading';
     return `<button class="new-files-tree__status-button new-files-tree__status-button--busy" type="button" disabled title="${helpers.escapeHtml(label)}" aria-label="${helpers.escapeHtml(label)}">${helpers.renderBusyIcon()}</button>`;
+  }
+
+  if (effectiveDownloadPath) {
+    const label = file.appliedAt ? `Downloaded. Applied ${helpers.formatTimestamp(file.appliedAt)}` : 'Downloaded';
+    return `
+      <span class="new-files-tree__downloaded-actions">
+        <button class="new-files-tree__status-button new-files-tree__status-button--downloaded new-files-tree__downloaded-check" type="button" disabled title="${helpers.escapeHtml(label)}" aria-label="${helpers.escapeHtml(label)}">${helpers.renderCheckIcon()}</button>
+        <button class="new-files-tree__status-button new-files-tree__status-button--downloaded-menu" data-action="toggle-remote-file-menu" data-file-key="${helpers.escapeHtml(fileKey)}" type="button" title="More actions" aria-label="More actions">${helpers.renderMoreActionsIcon()}</button>
+      </span>
+    `;
   }
 
   const title = runtime?.status === 'error'

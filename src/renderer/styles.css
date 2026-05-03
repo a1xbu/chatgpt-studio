@@ -755,14 +755,16 @@ button:disabled:hover {
   background: transparent;
 }
 
-.prompt-menu-portal {
+.prompt-menu-portal,
+.remote-file-menu-portal {
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 1200;
 }
 
-.prompt-menu-portal .tree-row__menu {
+.prompt-menu-portal .tree-row__menu,
+.remote-file-menu-portal .tree-row__menu {
   pointer-events: auto;
   min-width: 176px;
 }
@@ -3860,6 +3862,39 @@ button:disabled:hover {
 
 .new-files-tree__status-button--downloaded {
   color: #7cb66d;
+}
+
+.new-files-tree__downloaded-actions {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.new-files-tree__downloaded-check,
+.new-files-tree__status-button--downloaded-menu {
+  position: absolute;
+  inset: 0;
+}
+
+.new-files-tree__status-button--downloaded-menu {
+  display: none;
+  color: var(--text-soft);
+}
+
+.new-files-tree__row:hover .new-files-tree__downloaded-check {
+  display: none;
+}
+
+.new-files-tree__row:hover .new-files-tree__status-button--downloaded-menu {
+  display: inline-flex;
+}
+
+.new-files-tree__status-button--downloaded-menu:hover {
+  background: rgba(122, 162, 255, 0.16);
+  color: #edf3ff;
 }
 
 .new-files-tree__status-button--busy {

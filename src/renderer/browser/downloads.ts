@@ -8,6 +8,11 @@ import type { ChatEditorTab } from '../editor/types';
 import type { FileDownloadRuntimeStatus, WebviewElement } from '../runtime-types';
 import type { SidebarSelection } from '../sidebar/types';
 
+export type BrowserFileCommand = 'enqueue-file-download' | 'enqueue-file-download-again' | 'cancel-file-download';
+
+const AUTOMATIC_SANDBOX_DOWNLOAD_BASE_DELAY_MS = 15_000;
+const AUTOMATIC_SANDBOX_DOWNLOAD_RANDOM_DELAY_MS = 15_000;
+
 const FILE_DOWNLOAD_RUNTIME_STATUSES: ReadonlySet<FileDownloadRuntimeStatus['status']> = new Set([
   'waiting',
   'resolving',
@@ -29,7 +34,7 @@ export type SendBrowserFileCommandOptions = {
 };
 
 export function sendBrowserFileCommand(
-  command: 'enqueue-file-download' | 'cancel-file-download',
+  command: BrowserFileCommand,
   file: ChatFileRecord,
   options: SendBrowserFileCommandOptions,
 ): void {
@@ -62,15 +67,26 @@ export type QueueAutomaticSandboxDownloadsOptions = {
   getAllSidebarProjects: (state: AppStateSnapshot) => SidebarProject[];
   getLatestNewFiles: (projects: SidebarProject[], selection: SidebarSelection | null) => LatestNewFileEntry[];
   getChatFileKey: (file: ChatFileRecord) => string;
-  sendBrowserFileCommand: (command: 'enqueue-file-download' | 'cancel-file-download', file: ChatFileRecord) => void;
+  sendBrowserFileCommand: (command: BrowserFileCommand, file: ChatFileRecord) => void;
+  isDownloadAutomaticallyEnabled?: () => boolean;
+  setTimeout?: (callback: () => void, delayMs: number) => number;
+  random?: () => number;
+  render?: () => void;
   newIsoTimestamp?: () => string;
 };
+
+function getAutomaticSandboxDownloadDelayMs(random: () => number): number {
+  return AUTOMATIC_SANDBOX_DOWNLOAD_BASE_DELAY_MS
+    + Math.floor(random() * (AUTOMATIC_SANDBOX_DOWNLOAD_RANDOM_DELAY_MS + 1));
+}
 
 export function queueAutomaticSandboxDownloads(options: QueueAutomaticSandboxDownloadsOptions): void {
   if (!options.downloadAutomatically || !options.currentState) {
     return;
   }
 
+  const setTimeoutImpl = options.setTimeout ?? ((callback: () => void, delayMs: number) => Number(globalThis.setTimeout(callback, delayMs)));
+  const random = options.random ?? Math.random;
   const entries = options.getLatestNewFiles(options.getAllSidebarProjects(options.currentState), options.selectedSidebarItem);
   for (const { project, file } of entries) {
     if (!project.folderPath || file.downloadPath) {
@@ -90,11 +106,29 @@ export function queueAutomaticSandboxDownloads(options: QueueAutomaticSandboxDow
       fileName: file.fileName ?? null,
       status: 'waiting',
       progressPercent: 0,
-      message: 'Waiting in queue',
+      message: 'Waiting before automatic download',
       downloadPath: file.downloadPath ?? null,
       updatedAt: (options.newIsoTimestamp ?? (() => new Date().toISOString()))(),
     });
-    options.sendBrowserFileCommand('enqueue-file-download', file);
+
+    const delayMs = getAutomaticSandboxDownloadDelayMs(random);
+    setTimeoutImpl(() => {
+      if (options.isDownloadAutomaticallyEnabled && !options.isDownloadAutomaticallyEnabled()) {
+        const currentStatus = options.fileDownloadStatuses.get(fileKey) ?? null;
+        if (currentStatus?.status === 'waiting') {
+          options.fileDownloadStatuses.delete(fileKey);
+          options.render?.();
+        }
+        return;
+      }
+
+      const currentStatus = options.fileDownloadStatuses.get(fileKey) ?? null;
+      if (currentStatus?.status !== 'waiting') {
+        return;
+      }
+
+      options.sendBrowserFileCommand('enqueue-file-download', file);
+    }, delayMs);
   }
 }
 

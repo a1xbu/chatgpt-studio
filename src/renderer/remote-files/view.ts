@@ -30,6 +30,7 @@ export type RemoteFilesPanelViewOptions = {
   renderCheckIcon: () => string;
   renderChevronIcon: () => string;
   renderDownloadArrowIcon: () => string;
+  renderMoreActionsIcon: () => string;
   renderFileTreeFileIcon: () => string;
   renderFolderTreeIcon: RemoteFilesPanelHelpers['renderFolderTreeIcon'];
   getChatFileKey: RemoteFilesPanelHelpers['getChatFileKey'];
@@ -90,6 +91,7 @@ export function renderRemoteFilesPanel(options: RemoteFilesPanelViewOptions): vo
       renderCheckIcon: options.renderCheckIcon,
       renderChevronIcon: options.renderChevronIcon,
       renderDownloadArrowIcon: options.renderDownloadArrowIcon,
+      renderMoreActionsIcon: options.renderMoreActionsIcon,
       renderFileTreeFileIcon: options.renderFileTreeFileIcon,
       renderFolderTreeIcon: options.renderFolderTreeIcon,
       getChatFileKey: options.getChatFileKey,
