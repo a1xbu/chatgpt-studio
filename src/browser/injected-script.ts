@@ -58,6 +58,8 @@
     currentMessageKey: string | null;
     currentRole: ChatHistoryMessageRole;
     currentUpdatedAt: string | null;
+    currentFieldPath: string | null;
+    currentFieldOperation: string | null;
     emitTimer: number | null;
     messagesByKey: Map<
       string,
@@ -67,10 +69,12 @@
         role: ChatHistoryMessageRole;
         text: string;
         updatedAt: string | null;
+        order: number;
       }
     >;
     messageFieldBuffers: Map<string, string>;
     sseBuffer: string;
+    messageSequence: number;
   };
 
   const injectedWindow = window as Window & {
@@ -1039,8 +1043,7 @@
     if (sandboxPaths.length) {
       logDebug(
         'info',
-        `Detected sandbox files in last final assistant message: chatId="${params.chatId}" messageId="${params.messageId}" count="${String(sandboxPaths.length)}"`,
-        sandboxPaths.join('\n'),
+        `[stream] sandbox files detected in assistant message: chatId="${params.chatId}" messageId="${params.messageId}" count=${String(sandboxPaths.length)} paths=[${sandboxPaths.join(', ')}]`,
       );
     }
 
@@ -2308,10 +2311,13 @@
       currentMessageKey: null,
       currentRole: 'unknown',
       currentUpdatedAt: null,
+      currentFieldPath: null,
+      currentFieldOperation: null,
       emitTimer: null,
       messagesByKey: new Map(),
       messageFieldBuffers: new Map(),
       sseBuffer: '',
+      messageSequence: 0,
     };
   }
 
@@ -2321,6 +2327,7 @@
     role: ChatHistoryMessageRole;
     text: string;
     updatedAt: string | null;
+    order: number;
   } {
     if (!context.currentMessageKey) {
       context.currentMessageKey = context.currentMessageId ?? `stream-${++context.anonymousMessageSequence}`;
@@ -2337,50 +2344,48 @@
       role: context.currentRole,
       text: '',
       updatedAt: context.currentUpdatedAt,
+      order: ++context.messageSequence,
     };
     context.messagesByKey.set(context.currentMessageKey, created);
     return created;
   }
 
-  function rekeyCurrentStreamMessage(context: StreamContext, nextMessageId: string): void {
+  // Switch the streaming context to a different message id. If we were tracking
+  // an anonymous bucket (text deltas arrived before any envelope) we rename
+  // that bucket to the real id. Otherwise we just point currentMessageKey at
+  // the new id, leaving any prior message untouched in messagesByKey so
+  // multi-message turns (input → thoughts → code → tool → recap → answer)
+  // accumulate alongside each other instead of clobbering one another.
+  function switchToStreamMessage(context: StreamContext, nextMessageId: string): void {
     const normalizedMessageId = cleanupText(nextMessageId);
     if (!normalizedMessageId) {
       return;
     }
 
-    const currentMessage = getOrCreateCurrentStreamMessage(context);
-    const currentKey = context.currentMessageKey;
+    const previousKey = context.currentMessageKey;
+    const isAnonymousPrevious = Boolean(previousKey && previousKey.startsWith('stream-'));
     context.currentMessageId = normalizedMessageId;
+    context.currentFieldPath = null;
+    context.currentFieldOperation = null;
 
-    if (currentKey === normalizedMessageId) {
-      currentMessage.messageId = normalizedMessageId;
+    if (previousKey === normalizedMessageId) {
       return;
     }
 
-    const existingTarget = context.messagesByKey.get(normalizedMessageId) ?? null;
-    const mergedTarget = existingTarget
-      ? {
-          createdAt: currentMessage.createdAt ?? existingTarget.createdAt,
-          messageId: normalizedMessageId,
-          role: currentMessage.role !== 'unknown' ? currentMessage.role : existingTarget.role,
-          text: currentMessage.text.length >= existingTarget.text.length ? currentMessage.text : existingTarget.text,
-          updatedAt: currentMessage.updatedAt ?? existingTarget.updatedAt,
+    if (isAnonymousPrevious && previousKey && !context.messagesByKey.has(normalizedMessageId)) {
+      const moved = context.messagesByKey.get(previousKey);
+      if (moved) {
+        moved.messageId = normalizedMessageId;
+        context.messagesByKey.set(normalizedMessageId, moved);
+        context.messagesByKey.delete(previousKey);
+
+        const fieldEntries = Array.from(context.messageFieldBuffers.entries()).filter(([entryKey]) =>
+          entryKey.startsWith(`${previousKey}::`),
+        );
+        for (const [entryKey, value] of fieldEntries) {
+          context.messageFieldBuffers.delete(entryKey);
+          context.messageFieldBuffers.set(`${normalizedMessageId}${entryKey.slice(previousKey.length)}`, value);
         }
-      : {
-          ...currentMessage,
-          messageId: normalizedMessageId,
-        };
-
-    context.messagesByKey.set(normalizedMessageId, mergedTarget);
-    if (currentKey && currentKey !== normalizedMessageId) {
-      context.messagesByKey.delete(currentKey);
-
-      const fieldEntries = Array.from(context.messageFieldBuffers.entries()).filter(([entryKey]) =>
-        entryKey.startsWith(`${currentKey}::`),
-      );
-      for (const [entryKey, value] of fieldEntries) {
-        context.messageFieldBuffers.delete(entryKey);
-        context.messageFieldBuffers.set(`${normalizedMessageId}${entryKey.slice(currentKey.length)}`, value);
       }
     }
 
@@ -2427,6 +2432,8 @@
     }
 
     context.messageFieldBuffers.set(fieldKey, nextValue);
+    context.currentFieldPath = fieldPath;
+    context.currentFieldOperation = operation === 'replace' || operation === 'add' ? 'append' : operation;
     message.messageId = context.currentMessageId ?? message.messageId;
     message.role = context.currentRole !== 'unknown' ? context.currentRole : message.role;
     message.createdAt = context.currentCreatedAt ?? message.createdAt;
@@ -2437,7 +2444,7 @@
   function ingestStreamMessage(context: StreamContext, message: Record<string, unknown>): void {
     const messageId = normalizeOptionalText(message.id);
     if (messageId) {
-      rekeyCurrentStreamMessage(context, messageId);
+      switchToStreamMessage(context, messageId);
     }
 
     context.currentRole = normalizeMessageRole(isRecord(message.author) ? message.author.role : null);
@@ -2461,12 +2468,35 @@
       return;
     }
 
-    const fieldPath = typeof operation.p === 'string' ? cleanupText(operation.p) : '';
+    const hasFieldPath = typeof operation.p === 'string';
+    const fieldPath = typeof operation.p === 'string' ? operation.p.trim() : '';
     const action = typeof operation.o === 'string' ? cleanupText(operation.o) : '';
     const value = operation.v;
 
+    // {"o": "patch", "v": [...]} carries a batch of sub-operations; recurse.
+    if (action === 'patch' && Array.isArray(value)) {
+      for (const sub of value) {
+        processStreamPatchOperation(context, sub);
+      }
+      return;
+    }
+
+    // Continuation delta `{"v": "..."}` — no `p`, no `o`. The OpenAI stream
+    // protocol implicitly continues the most recent text-append on the same
+    // message. Replay it against the saved field path so assistant text
+    // accumulates instead of being silently dropped.
+    if (!hasFieldPath && !action && typeof value === 'string' && context.currentFieldPath && context.currentMessageKey) {
+      applyStreamMessageFieldOperation(
+        context,
+        context.currentFieldPath,
+        context.currentFieldOperation ?? 'append',
+        value,
+      );
+      return;
+    }
+
     if (fieldPath === '/message/id' && typeof value === 'string') {
-      rekeyCurrentStreamMessage(context, value);
+      switchToStreamMessage(context, value);
     }
 
     if (fieldPath === '/message/create_time') {
@@ -2486,7 +2516,8 @@
       typeof value === 'string' &&
       (fieldPath === '/message/content/text' || fieldPath.startsWith('/message/content/parts/'))
     ) {
-      applyStreamMessageFieldOperation(context, fieldPath, action, value);
+      applyStreamMessageFieldOperation(context, fieldPath, action || 'append', value);
+      return;
     }
 
     if (isRecord(value) && isRecord(value.message)) {
@@ -2506,20 +2537,18 @@
 
     if (isRecord(payload.message)) {
       ingestStreamMessage(context, payload.message);
+      return;
     }
 
     if (isRecord(payload.input_message)) {
       ingestStreamMessage(context, payload.input_message);
+      return;
     }
 
-    if (isRecord(payload.v) && isRecord(payload.v.message)) {
-      ingestStreamMessage(context, payload.v.message);
-    }
-
-    if (Array.isArray(payload.v)) {
-      for (const entry of payload.v) {
-        processStreamPatchOperation(context, entry);
-      }
+    const hasPatchShape =
+      typeof payload.p === 'string' || typeof payload.o === 'string' || 'v' in payload;
+    if (hasPatchShape) {
+      processStreamPatchOperation(context, payload);
     }
   }
 
@@ -2550,7 +2579,7 @@
 
     const partialMessages = Array.from(context.messagesByKey.values())
       .filter((message) => cleanupText(message.text))
-      .sort(compareHistoryMessages);
+      .sort((left, right) => left.order - right.order);
     if (!partialMessages.length) {
       return null;
     }
@@ -2609,9 +2638,11 @@
       }
 
       emitConversationHistory(historyRecord);
+      const lastMessage = historyRecord.messages[historyRecord.messages.length - 1];
+      const tailExcerpt = (lastMessage?.text ?? '').slice(-120).replace(/\s+/g, ' ');
       logDebug(
         'info',
-        `Captured live conversation stream: projectId="${historyRecord.projectId}" chatId="${historyRecord.chatId}" messages="${String(historyRecord.messageCount)}"`,
+        `[stream] flushed history: projectId="${historyRecord.projectId}" chatId="${historyRecord.chatId}" messages=${String(historyRecord.messageCount)} immediate=${String(immediate)} tail="${tailExcerpt}"`,
       );
     };
 
@@ -2683,6 +2714,154 @@
     }
 
     emitStreamHistory(context, true);
+  }
+
+  // ChatGPT pushes turn deltas through wss://ws.chatgpt.com/p7/ws/...
+  // The POST /backend-api/f/conversation response only carries a handoff
+  // token; the actual encoded SSE blocks live in the websocket envelopes
+  // below. Each turn opens a new topic id, so we keep a per-topic context.
+  const streamContextsByTopic = new Map<string, StreamContext>();
+
+  function getOrCreateTopicStreamContext(topicId: string, conversationId: string | null): StreamContext {
+    let context = streamContextsByTopic.get(topicId);
+    if (!context) {
+      context = createStreamContext(conversationId);
+      streamContextsByTopic.set(topicId, context);
+      logDebug(
+        'info',
+        `[stream] topic opened: ${topicId} (conversationId="${conversationId ?? 'null'}")`,
+      );
+    } else if (conversationId && !context.conversationId) {
+      context.conversationId = conversationId;
+    }
+    return context;
+  }
+
+  function disposeTopicStreamContext(topicId: string): void {
+    const context = streamContextsByTopic.get(topicId);
+    if (!context) {
+      return;
+    }
+    finalizeLiveStream(context);
+    streamContextsByTopic.delete(topicId);
+    logDebug(
+      'info',
+      `[stream] topic closed: ${topicId} (final messageCount=${String(context.messagesByKey.size)})`,
+    );
+  }
+
+  function processWebSocketEnvelope(envelope: unknown): void {
+    if (!isRecord(envelope)) {
+      return;
+    }
+    const topicId = typeof envelope.topic_id === 'string' ? cleanupText(envelope.topic_id) : '';
+    if (!topicId) {
+      return;
+    }
+
+    const outerPayload = isRecord(envelope.payload) ? envelope.payload : null;
+    const inner = outerPayload && isRecord(outerPayload.payload) ? outerPayload.payload : null;
+    if (!inner) {
+      return;
+    }
+
+    const conversationId = typeof inner.conversation_id === 'string' ? cleanupText(inner.conversation_id) : null;
+    const innerType = typeof inner.type === 'string' ? inner.type : '';
+
+    if (innerType === 'stream-item') {
+      const encodedItem = typeof inner.encoded_item === 'string' ? inner.encoded_item : '';
+      if (!encodedItem) {
+        return;
+      }
+
+      const context = getOrCreateTopicStreamContext(topicId, conversationId);
+      const previousMessageCount = context.messagesByKey.size;
+      processLiveStreamChunk(context, encodedItem);
+      const nextMessageCount = context.messagesByKey.size;
+
+      if (nextMessageCount > previousMessageCount) {
+        const latestMessage = Array.from(context.messagesByKey.values())
+          .sort((a, b) => a.order - b.order)[nextMessageCount - 1];
+        logDebug(
+          'info',
+          `[stream] captured message: id="${latestMessage?.messageId ?? '?'}" role="${latestMessage?.role ?? '?'}" conversationId="${conversationId ?? 'null'}"`,
+        );
+      }
+      return;
+    }
+
+    if (innerType === 'message_stream_complete') {
+      logDebug(
+        'info',
+        `[stream] message_stream_complete (topic=${topicId}, conversationId=${conversationId ?? 'null'})`,
+      );
+      disposeTopicStreamContext(topicId);
+    }
+  }
+
+  function processWebSocketMessage(rawData: unknown): void {
+    if (typeof rawData !== 'string') {
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      return;
+    }
+
+    if (Array.isArray(parsed)) {
+      for (const entry of parsed) {
+        processWebSocketEnvelope(entry);
+      }
+    } else if (isRecord(parsed)) {
+      processWebSocketEnvelope(parsed);
+    }
+  }
+
+  function installWebSocketInterceptor(): void {
+    const NativeWebSocket = window.WebSocket;
+    if (!NativeWebSocket) {
+      return;
+    }
+
+    type WrappedWebSocket = WebSocket & { __chatgptDesktopPocHooked?: boolean };
+
+    const ProxiedWebSocket = function (this: WrappedWebSocket, url: string | URL, protocols?: string | string[]) {
+      const instance = protocols !== undefined
+        ? new NativeWebSocket(url, protocols)
+        : new NativeWebSocket(url);
+      const wrapped = instance as WrappedWebSocket;
+      if (!wrapped.__chatgptDesktopPocHooked) {
+        wrapped.__chatgptDesktopPocHooked = true;
+        try {
+          wrapped.addEventListener('message', (event: MessageEvent) => {
+            try {
+              processWebSocketMessage(event.data);
+            } catch (error) {
+              logDebug('warn', '[stream] WebSocket message handler threw.', String(error));
+            }
+          });
+        } catch (error) {
+          logDebug('warn', '[stream] Unable to attach WebSocket message listener.', String(error));
+        }
+      }
+      return wrapped;
+    } as unknown as typeof WebSocket;
+
+    ProxiedWebSocket.prototype = NativeWebSocket.prototype;
+    Object.setPrototypeOf(ProxiedWebSocket, NativeWebSocket);
+
+    try {
+      Object.defineProperty(window, 'WebSocket', {
+        value: ProxiedWebSocket,
+        writable: true,
+        configurable: true,
+      });
+      logDebug('info', '[stream] WebSocket interceptor installed.');
+    } catch (error) {
+      logDebug('warn', '[stream] Unable to install WebSocket interceptor.', String(error));
+    }
   }
 
   function applyConversationSnapshot(conversationId: string, snapshot: unknown, rawUrl: string): void {
@@ -2969,6 +3148,8 @@
 
   wrapHistoryMethod('pushState');
   wrapHistoryMethod('replaceState');
+
+  installWebSocketInterceptor();
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args: Parameters<typeof window.fetch>): Promise<Response> => {
